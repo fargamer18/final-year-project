@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel = "stylesheet" href = "style.css">
+    <script src="script.js" defer></script>
+    <title>ArchGPT</title>
+</head>
+<body>
+    <div class="app-container">
+        <nav class="sidebar">
+            <div class="sidebar-header">
+                <h1 class="logo">ArchGPT</h1>
+                <button class="menu-btn">☰</button>
+            </div>
+            <div class="sidebar-menu">
+                <button class="new-chat-btn">+ New Chat</button>
+                <button class="delete-chat-btn">Delete Current Chat</button>
+                <div class="chat-history">
+                    <!-- Menu options can be removed if not needed -->
+                </div>
+            </div>
+        </nav>
+
+        <main class="main-content">
+            <div class="white-space-area">
+                <div class="canvas-container" id="archCanvas"></div>
+            </div>
+            <div class="chat-container">
+                <div class="chat-messages">
+                    <div class="welcome-message">
+                        <h2>How can I help you today?</h2>
+                    </div>
+                </div>
+                
+                <div class="input-area">
+                    <form class="message-form">
+                        <div class="input-container">
+                            <input type="text" placeholder="Ask anything..." class="message-input">
+                            <input type="file" class="file-input" style="margin-left:10px;">
+                            <button type="submit" class="send-btn">
+                            ➤
+                            </button>
+
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </main>
+
+</div>
+</body>
+</html>
