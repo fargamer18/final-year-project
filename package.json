@@ -1,0 +1,33 @@
+{
+  "name": "cad-dsl-project",
+  "version": "1.0.0",
+  "description": "A domain-specific language for generating CAD-style models with physics simulations.",
+  "main": "src/core/dsl.ts",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "npm run build && http-server",
+    "test": "jest"
+  },
+  "dependencies": {
+    "babylonjs": "^5.0.0",
+    "three": "^0.130.0"
+  },
+  "devDependencies": {
+    "@types/babylonjs": "^2.3.31",
+    "@types/jest": "^26.0.0",
+    "@types/three": "^0.180.0",
+    "jest": "^26.0.0",
+    "typescript": "^4.0.0",
+    "http-server": "^14.1.1"
+  },
+  "keywords": [
+    "CAD",
+    "DSL",
+    "Babylon.js",
+    "Three.js",
+    "Physics"
+  ],
+  "author": "Your Name",
+  "license": "MIT"
+}
