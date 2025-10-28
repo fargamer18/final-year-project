@@ -1,54 +1,223 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <link rel = "stylesheet" href = "style.css">
-    <script src="script.js" defer></script>
-    <title>ArchGPT</title>
+    <meta charset="utf-8">
+    <title>CAD DSL House with Earthquake Simulation</title>
+    <style>
+        html, body {
+            overflow: hidden;
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            padding: 0;
+        }
+        #renderCanvas {
+            width: 100%;
+            height: 100%;
+            touch-action: none;
+        }
+        #controls {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(255, 255, 255, 0.7);
+            padding: 10px;
+            border-radius: 5px;
+        }
+    </style>
+    <script src="https://cdn.babylonjs.com/babylon.js"></script>
+    <script src="https://cdn.babylonjs.com/materialsLibrary/babylonjs.materials.min.js"></script>
+    <script src="https://cdn.babylonjs.com/loaders/babylonjs.loaders.min.js"></script>
+    <script src="https://cdn.babylonjs.com/gui/babylon.gui.min.js"></script>
+    <script src="https://cdn.babylonjs.com/cannon.js"></script>
 </head>
 <body>
-    <div class="app-container">
-        <nav class="sidebar">
-            <div class="sidebar-header">
-                <h1 class="logo">ArchGPT</h1>
-                <button class="menu-btn">☰</button>
-            </div>
-            <div class="sidebar-menu">
-                <button class="new-chat-btn">+ New Chat</button>
-                <button class="delete-chat-btn">Delete Current Chat</button>
-                <div class="chat-history">
-                    <!-- Menu options can be removed if not needed -->
-                </div>
-            </div>
-        </nav>
+    <canvas id="renderCanvas"></canvas>
+    <div id="controls">
+        <button onclick="startEarthquake()">Start Earthquake</button>
+        <button onclick="stopEarthquake()">Stop Earthquake</button>
+        <div>
+            <label>Intensity:</label>
+            <input type="range" min="0.1" max="2" step="0.1" value="0.5" id="intensitySlider" 
+                   onchange="updateEarthquakeIntensity()">
+        </div>
+    </div>
 
-        <main class="main-content">
-            <div class="white-space-area">
-                <div class="canvas-container" id="archCanvas"></div>
-            </div>
-            <div class="chat-container">
-                <div class="chat-messages">
-                    <div class="welcome-message">
-                        <h2>How can I help you today?</h2>
-                    </div>
-                </div>
+    <script type="module">
+        import { BabylonRenderer } from './dist/engine/babylonRenderer.js';
+        import { parseDSL } from './dist/core/dsl.js';
+        import { PhysicsSimulator } from './dist/engine/physics.js';
+
+        async function initScene() {
+            try {
+                console.log("Initializing scene...");
+                // Initialize the engine
+                const canvas = document.getElementById("renderCanvas");
+                const engine = new BABYLON.Engine(canvas, true);
+                window.engine = engine;
+
+                // Create scene with dark grey background
+                const scene = new BABYLON.Scene(engine);
+                scene.clearColor = new BABYLON.Color3(0.2, 0.2, 0.2); // Dark grey background
+                window.scene = scene;
+
+                // Initialize physics with gravity
+                const gravityVector = new BABYLON.Vector3(0, -9.81, 0);
+                const physicsPlugin = new BABYLON.CannonJSPlugin();
+                scene.enablePhysics(gravityVector, physicsPlugin);
+
+                // Camera setup
+                const camera = new BABYLON.ArcRotateCamera("camera", 
+                    Math.PI / 4, // alpha - changed for better initial view
+                    Math.PI / 3, // beta
+                    20, // radius - closer to see the house better
+                    new BABYLON.Vector3(0, 2, 0), // target - centered on house
+                    scene
+                );
+                camera.attachControl(canvas, true);
+                camera.lowerRadiusLimit = 8;  // Allow closer zoom
+                camera.upperRadiusLimit = 40; // Limit max distance
+                camera.wheelPrecision = 50;   // Slower zoom
+                camera.panningSensibility = 50; // Slower panning
                 
-                <div class="input-area">
-                    <form class="message-form">
-                        <div class="input-container">
-                            <input type="text" placeholder="Ask anything..." class="message-input">
-                            <input type="file" class="file-input" style="margin-left:10px;">
-                            <button type="submit" class="send-btn">
-                            ➤
-                            </button>
+                // Set initial camera position for better view of the house
+                camera.setPosition(new BABYLON.Vector3(15, 10, 15));
+                camera.setTarget(new BABYLON.Vector3(0, 2, 0));
 
-                        </div>
-                    </form>
-                </div>
-            </div>
-        </main>
+                // Light - adjusted for dark background
+                const light = new BABYLON.HemisphericLight("light", 
+                    new BABYLON.Vector3(0, 1, 0), 
+                    scene
+                );
+                light.intensity = 1.0; // Increased intensity for dark background
+                light.groundColor = new BABYLON.Color3(0.2, 0.2, 0.2); // Ambient light for better visibility
 
-</div>
+                // Enable debug layer
+                scene.debugLayer.show({
+                    embedMode: true,
+                    overlay: true
+                });
+
+                // Add SSAO for better depth perception
+                const ssao = new BABYLON.SSAO2RenderingPipeline("ssao", scene, {
+                    ssaoRatio: 0.5, // Render at half resolution for performance
+                    blurRatio: 1 // Full resolution blur
+                });
+                ssao.radius = 2;
+                ssao.totalStrength = 1;
+                ssao.expensiveBlur = true;
+                scene.postProcessRenderPipelineManager.attachCamerasToRenderPipeline("ssao", camera);
+
+                // Wait for CANNON to be ready
+                await new Promise(resolve => {
+                    const checkCannon = () => {
+                        if (typeof CANNON !== 'undefined') {
+                            resolve(true);
+                        } else {
+                            setTimeout(checkCannon, 100);
+                        }
+                    };
+                    checkCannon();
+                });
+
+                console.log("Creating PhysicsSimulator...");
+                window.physicsSimulator = new PhysicsSimulator(scene);
+
+                // Wait for physics to be ready
+                await new Promise(resolve => {
+                    const checkPhysics = () => {
+                        if (window.physicsSimulator.isPhysicsReady()) {
+                            resolve(true);
+                        } else {
+                            setTimeout(checkPhysics, 100);
+                        }
+                    };
+                    checkPhysics();
+                });
+
+                console.log("Creating BabylonRenderer...");
+                window.renderer = new BabylonRenderer(scene);
+
+                // Position camera for better view
+                camera.setPosition(new BABYLON.Vector3(20, 15, 20));
+                camera.setTarget(BABYLON.Vector3.Zero());
+
+                // Load and parse DSL file
+                console.log("Loading DSL file...");
+                const response = await fetch('./examples/simple-house.dsl');
+                const dslCode = await response.text();
+                
+                // Parse the DSL code
+                const dslModel = parseDSL(dslCode);
+                console.log("Parsed DSL model:", dslModel);
+                
+                // Validate the parsed model has required properties
+                if (!dslModel.width || !dslModel.height || !dslModel.depth) {
+                    console.error("Missing required house dimensions in DSL model");
+                    return;
+                }
+                
+                // Render the house from DSL
+                console.log("Creating house from DSL...");
+                const house = window.renderer.render({
+                    type: "house",
+                    properties: {
+                        ...dslModel,
+                        materials: {
+                            walls: dslModel.material?.walls || "white",
+                            roof: dslModel.material?.roof || "red",
+                            foundation: dslModel.material?.foundation || "gray"
+                        }
+                    }
+                });
+
+                // Render loop
+                engine.runRenderLoop(function() {
+                    scene.render();
+                });
+
+                // Handle window resize
+                window.addEventListener("resize", function() {
+                    engine.resize();
+                });
+
+                console.log("Scene initialized successfully");
+            } catch (error) {
+                console.error("Error initializing scene:", error);
+            }
+        }
+
+        // Initialize everything when the page loads
+        window.addEventListener('DOMContentLoaded', initScene);
+
+        // Expose functions for controls
+        window.startEarthquake = function() {
+            if (window.physicsSimulator) {
+                console.log("Starting earthquake...");
+                window.physicsSimulator.startEarthquake(10000);
+            } else {
+                console.error("PhysicsSimulator not initialized");
+            }
+        };
+
+        window.stopEarthquake = function() {
+            if (window.physicsSimulator) {
+                console.log("Stopping earthquake...");
+                window.physicsSimulator.stopEarthquake();
+            } else {
+                console.error("PhysicsSimulator not initialized");
+            }
+        };
+
+        window.updateEarthquakeIntensity = function() {
+            if (window.physicsSimulator) {
+                const intensity = document.getElementById("intensitySlider").value;
+                console.log("Updating earthquake intensity to:", intensity);
+                window.physicsSimulator.setEarthquakeIntensity(parseFloat(intensity), 2);
+            } else {
+                console.error("PhysicsSimulator not initialized");
+            }
+        };
+    </script>
 </body>
 </html>

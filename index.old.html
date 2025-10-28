@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html>
+<head    <script src="https://cdn.babylonjs.com/babylon.js"></script>
+    <script src="https://cdn.babylonjs.com/loaders/babylonjs.loaders.min.js"></script>
+    <script src="https://cdn.babylonjs.com/materialsLibrary/babylonjs.materials.min.js"></script>
+    <script src="https://cdn.babylonjs.com/proceduralTexturesLibrary/babylonjs.proceduralTextures.min.js"></script>
+    <script src="https://cdn.babylonjs.com/postProcessesLibrary/babylonjs.postProcess.min.js"></script>
+    <script src="https://cdn.babylonjs.com/serializers/babylonjs.serializers.min.js"></script>
+    <script src="https://cdn.babylonjs.com/gui/babylon.gui.min.js"></script>
+    <script src="https://cdn.babylonjs.com/inspector/babylon.inspector.bundle.js"></script>
+    <script src="https://cdn.babylonjs.com/cannon.js"></script>
+    <!-- Add our compiled JavaScript files -->
+    <script type="module">
+        import { BabylonRenderer } from './dist/engine/babylonRenderer.js';
+        import { PhysicsSimulator } from './dist/engine/physics.js';
+
+        // Wait for everything to load
+        window.addEventListener('DOMContentLoaded', async () => {
+            // Initialize the engine
+            const canvas = document.getElementById("renderCanvas");
+            const engine = new BABYLON.Engine(canvas, true);a charset="utf-8">
+    <title>CAD DSL House with Earthquake Simulation</title>
+    <style>
+        html, body {
+            overflow: hidden;
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            padding: 0;
+        }
+        #renderCanvas {
+            width: 100%;
+            height: 100%;
+            touch-action: none;
+        }
+        #controls {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(255, 255, 255, 0.7);
+            padding: 10px;
+            border-radius: 5px;
+        }
+    </style>
+    <script src="https://cdn.babylonjs.com/babylon.js"></script>
+    <script src="https://cdn.babylonjs.com/cannon.js"></script>
+    <script src="https://preview.babylonjs.com/cannon.js"></script>
+    <!-- Add our compiled JavaScript files -->
+    <script type="module">
+        import { BabylonRenderer } from './dist/engine/babylonRenderer.js';
+        import { PhysicsSimulator } from './dist/engine/physics.js';
+
+        async function initializeScene() {
+            // Initialize the engine
+            const canvas = document.getElementById("renderCanvas");
+            const engine = new BABYLON.Engine(canvas, true);
+        window.engine = engine;
+
+        // Create scene function
+        const createScene = function() {
+            const scene = new BABYLON.Scene(engine);
+            scene.clearColor = new BABYLON.Color3(0.5, 0.8, 0.9);
+
+            // Camera
+            const camera = new BABYLON.ArcRotateCamera("camera", 
+                Math.PI / 4, Math.PI / 3, 20,
+                BABYLON.Vector3.Zero(), 
+                scene
+            );
+            camera.attachControl(canvas, true);
+            camera.lowerRadiusLimit = 10;
+            camera.upperRadiusLimit = 50;
+
+            // Light
+            const light = new BABYLON.HemisphericLight("light", 
+                new BABYLON.Vector3(0, 1, 0), 
+                scene
+            );
+            light.intensity = 0.7;
+
+            // Initialize physics and renderer
+            window.physicsSimulator = new PhysicsSimulator(scene);
+            window.renderer = new BabylonRenderer(scene);
+
+            // Create house
+            const house = window.renderer.render({
+                type: "house",
+                properties: {
+                    width: 8,
+                    height: 6,
+                    depth: 10,
+                    wallThickness: 0.3
+                }
+            });
+
+            return scene;
+        };
+
+        // Initialize scene
+        const scene = createScene();
+        window.scene = scene;
+
+        // Render loop
+        engine.runRenderLoop(function() {
+            scene.render();
+        });
+
+        // Handle window resize
+        window.addEventListener("resize", function() {
+            engine.resize();
+        });
+
+        // Expose functions for controls
+        window.startEarthquake = function() {
+            window.physicsSimulator.startEarthquake(10000);
+        };
+
+        window.stopEarthquake = function() {
+            window.physicsSimulator.stopEarthquake();
+        };
+
+        window.updateEarthquakeIntensity = function() {
+            const intensity = document.getElementById("intensitySlider").value;
+            window.physicsSimulator.setEarthquakeIntensity(intensity, 2);
+        };
+    </script>
+</head>
+<body>
+    <canvas id="renderCanvas"></canvas>
+    <div id="controls">
+        <button onclick="startEarthquake()">Start Earthquake</button>
+        <button onclick="stopEarthquake()">Stop Earthquake</button>
+        <div>
+            <label>Intensity:</label>
+            <input type="range" min="0.1" max="2" step="0.1" value="0.5" id="intensitySlider" 
+                   onchange="updateEarthquakeIntensity()">
+        </div>
+    </div>
+        let simulator;
+        const canvas = document.getElementById("renderCanvas");
+        const engine = new BABYLON.Engine(canvas, true);
+
+        const createScene = function() {
+            const scene = new BABYLON.Scene(engine);
+            scene.clearColor = new BABYLON.Color3(0.5, 0.8, 0.9);
+
+            // Camera
+            const camera = new BABYLON.ArcRotateCamera("camera", 
+                Math.PI / 4, Math.PI / 3, 20,
+                BABYLON.Vector3.Zero(), 
+                scene
+            );
+            camera.attachControl(canvas, true);
+            camera.lowerRadiusLimit = 10;
+            camera.upperRadiusLimit = 50;
+
+            // Light
+            const light = new BABYLON.HemisphericLight("light", 
+                new BABYLON.Vector3(0, 1, 0), 
+                scene
+            );
+            light.intensity = 0.7;
+
+            const renderer = new BabylonRenderer(scene);
+            simulator = new PhysicsSimulator(scene);
+
+            // Create house
+            const house = renderer.render({
+                type: "house",
+                properties: {
+                    width: 8,
+                    height: 6,
+                    depth: 10,
+                    wallThickness: 0.3
+                }
+            });
+
+            return scene;
+        };
+
+        const scene = createScene();
+
+        engine.runRenderLoop(function() {
+            scene.render();
+        });
+
+        window.addEventListener("resize", function() {
+            engine.resize();
+        });
+
+        function startEarthquake() {
+            simulator.startEarthquake(10000);
+        }
+
+        function stopEarthquake() {
+            simulator.stopEarthquake();
+        }
+
+        function updateEarthquakeIntensity() {
+            const intensity = document.getElementById("intensitySlider").value;
+            simulator.setEarthquakeIntensity(intensity, 2);
+        }
+    </script>
+</body>
+</html>
