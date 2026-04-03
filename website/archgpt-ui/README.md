@@ -1,8 +1,14 @@
+This is the website (UI) for ArchGPT. 
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
 ## Getting Started
 
-First, run the development server:
+First, install all the dependencies in the form of the node_modules folder
+```bash
+npm install
+```
+
+Then run the development server:
 
 ```bash
 npm run dev
