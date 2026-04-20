@@ -1,4 +1,4 @@
-import { DSLModel } from '../core/dsl';
+import { DSLModel } from '../core/dsl.js';
 export declare class ThreeRenderer {
     private scene;
     private camera;

@@ -49,6 +49,18 @@ export interface DSLCommand {
     properties: Record<string, any>;
     children?: DSLCommand[];
 }
+export interface ParsedElement {
+    type: string;
+    properties: {
+        width?: number;
+        height?: number;
+        depth?: number;
+        position?: [number, number, number];
+        name?: string;
+        material?: string;
+    };
+}
+export declare function parseCreateStatements(dslCode: string): ParsedElement[];
 export declare class DSLInterpreter {
     private scene;
     constructor(scene: BABYLON.Scene);

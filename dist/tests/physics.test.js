@@ -1,5 +1,5 @@
-import { PhysicsEngine } from '../engine/physics';
-import { Wall, Prism } from '../models/primitives';
+import { PhysicsEngine } from '../engine/physics.js';
+import { Wall, Prism } from '../models/primitives.js';
 describe('PhysicsEngine', () => {
     let physicsEngine;
     beforeEach(() => {

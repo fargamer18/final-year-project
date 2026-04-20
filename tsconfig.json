@@ -1,8 +1,9 @@
 {
   "compilerOptions": {
     "target": "ES2020",
-    "module": "ES2020",
-    "moduleResolution": "node",
+    "module": "node16",
+    "moduleResolution": "node16",
+    "isolatedModules": true,
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
@@ -14,6 +15,6 @@
     "sourceMap": true,
     "lib": ["ES2020", "DOM"]
   },
-  "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist"]
+  "include": ["src/core", "src/engine", "src/models"],
+  "exclude": ["node_modules", "dist", "src/tests"]
 }

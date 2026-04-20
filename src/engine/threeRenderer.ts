@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { DSLModel, DSLShape } from '../core/dsl';
+import { DSLModel, DSLShape } from '../core/dsl.js';
 
 export class ThreeRenderer {
     private scene: THREE.Scene;

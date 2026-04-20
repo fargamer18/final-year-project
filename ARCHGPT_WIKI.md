@@ -455,6 +455,7 @@ physics {
 ```
 
 This defines an object that:
+
 - Has a mass of 1 kg
 - Loses 80% of its bounce energy on impact (retains 20%)
 - Has moderate friction (typical materials)
@@ -575,6 +576,7 @@ interface Model {
 ```
 
 **Output:** An array of BabylonJS meshes that have been:
+
 - Created with appropriate geometry
 - Positioned in space
 - Configured for shadow receiving
@@ -660,6 +662,7 @@ const renderer = new ThreeRenderer(container: HTMLElement);
 ```
 
 Creates:
+
 - A Three.js Scene
 - A PerspectiveCamera (75° FOV, positioned at z = 5)
 - A WebGLRenderer outputting to the provided HTML container
@@ -734,6 +737,7 @@ const material = new THREE.MeshStandardMaterial({
 ```
 
 This material supports:
+
 - Basic colors (by name, hex, or THREE.Color)
 - PBR properties (if extended)
 - Standard shading model
@@ -1062,6 +1066,7 @@ A simplified collision shape attached to a mesh. Instead of computing collisions
 
 **PBR Material (Physically Based Rendering)**
 A shading model that simulates real-world material properties using parameters like:
+
 - **Metallic:** How metal-like the surface is (0 = non-metal, 1 = pure metal)
 - **Roughness:** How rough or shiny the surface is (0 = mirror-like, 1 = rough)
 - **Albedo Color:** The base color of the material
@@ -1072,6 +1077,7 @@ BabylonJS's PBR materials produce realistic, physically accurate rendering.
 
 **Restitution**
 A physics property controlling bounce. Formally, the ratio of relative speeds after and before a collision. Values:
+
 - 0 = no bounce (ball stops dead)
 - 0.5 = ball retains 50% of energy
 - 1.0 = perfectly elastic (ball bounces to original height)
@@ -1079,22 +1085,26 @@ A physics property controlling bounce. Formally, the ratio of relative speeds af
 
 **Friction**
 A physics property controlling surface resistance to sliding. Values:
+
 - 0 = frictionless (ice)
 - 0.5 = moderate (concrete)
 - 1.0+ = high friction (rubber)
 
 **Impostor Mass**
 In physics, mass determines how much an object is affected by forces:
+
 - mass = 0 → static object (immovable, like ground or a wall anchored to bedrock)
 - mass > 0 → dynamic object (affected by gravity, forces, collisions)
 
 **Amplitude (Earthquake)**
 The maximum displacement from equilibrium. In earthquake simulation, amplitude controls the maximum distance the ground moves:
+
 - Low amplitude (0.1) = gentle vibration
 - High amplitude (1.0) = strong shaking
 
 **Frequency (Earthquake)**
 The rate of oscillation, measured in Hertz (Hz). Represents how many complete cycles occur per second:
+
 - 0.1 Hz = slow rolling motion (one cycle per 10 seconds)
 - 2 Hz = typical seismic frequency (two cycles per second)
 - 5 Hz = very rapid shaking (five cycles per second)

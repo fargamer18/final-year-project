@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc",
-    "start": "npm run build && http-server",
+    "start": "npm run build && node server.mjs",
     "test": "jest"
   },
   "dependencies": {
