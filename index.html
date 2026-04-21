@@ -3441,7 +3441,7 @@
 
         const HOUSE_PLANNER_API_BASE = (typeof window.HOUSE_PLANNER_API_BASE === 'string' && window.HOUSE_PLANNER_API_BASE.trim())
             ? window.HOUSE_PLANNER_API_BASE.trim().replace(/\/+$/, '')
-            : 'http://localhost:3000';
+            : 'http://localhost:3001';
 
         function normalizeHouseRequestText(requestText) {
             return String(requestText || '')

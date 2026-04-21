@@ -42,7 +42,7 @@ async function loadEnvFile() {
 
 await loadEnvFile();
 
-const port = Number(process.env.PORT || 3000);
+const port = Number(process.env.PORT || 3001);
 const llmEndpoint = process.env.LLM_ENDPOINT || 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions';
 const llmModel = process.env.LLM_MODEL || 'gemini-2.5-flash';
 const llmApiKey = process.env.GEMINI_API_KEY || process.env.LLM_API_KEY || process.env.OPENAI_API_KEY || process.env.XAI_API_KEY || '';
