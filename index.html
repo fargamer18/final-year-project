@@ -1027,6 +1027,7 @@
         <div class="topbar-actions">
             <button class="secondary-button" onclick="document.getElementById('houseRequestInput').value='make me a G+2 modern villa with lift, terrace, and covered parking'; generateHouseFromPrompt();">Quick create</button>
             <button class="secondary-button" onclick="togglePlanView()">Floor plan</button>
+            <button class="secondary-button" onclick="enterHouseInAR()">View in AR</button>
             <button class="secondary-button" onclick="restoreDefaultHouse()">Reset villa</button>
         </div>
     </header>
@@ -1535,8 +1536,10 @@
             engine: null,
             camera: null,
             renderer: null,
+            arExperience: null,
             housePalette: { ...DEFAULT_HOUSE_PALETTE },
             houseSpec: null,
+            professionalGuidance: null,
             houseDslPreview: '',
             lawReview: null,
             lawReviewError: '',
@@ -2500,7 +2503,7 @@
                     dsl: true,
                     dxf: true,
                     vr: false,
-                    ar: false
+                    ar: true
                 },
                 questions: []
             };
@@ -2641,7 +2644,7 @@
                     dsl: true,
                     dxf: true,
                     vr: false,
-                    ar: false
+                    ar: true
                 },
                 questions: []
             };
@@ -3308,7 +3311,22 @@
             return rendered;
         }
 
-        function formatHouseOutput(spec, dslPreview) {
+        function formatHouseOutput(spec, dslPreview, lawReview = null, lawReviewError = '') {
+            const professionalGuidance = buildProfessionalGuidance(spec, lawReview, lawReviewError);
+            const outputFlags = [];
+            if (spec.outputs?.dsl !== false) {
+                outputFlags.push('DSL');
+            }
+            if (spec.outputs?.dxf !== false) {
+                outputFlags.push('DXF');
+            }
+            if (spec.outputs?.ar !== false) {
+                outputFlags.push('AR');
+            }
+            if (spec.outputs?.vr) {
+                outputFlags.push('VR');
+            }
+
             const details = [
                 `Status: ${spec.status}`,
                 `Request: ${spec.request}`,
@@ -3316,8 +3334,18 @@
                 `Storeys: ${spec.building.totalStoreys}`,
                 `Style: ${spec.building.style || 'unknown'}`,
                 `Road facing: ${spec.site.roadFacing || 'unknown'}`,
-                `Main entrance: ${spec.facade.mainEntranceFacing || 'unknown'}`
+                `Main entrance: ${spec.facade.mainEntranceFacing || 'unknown'}`,
+                `Outputs: ${outputFlags.join(', ') || 'none'}`
             ];
+
+            if (professionalGuidance.requested.length > 0 || professionalGuidance.recommended.length > 0) {
+                details.push('', 'Professional guidance:');
+                if (professionalGuidance.requested.length > 0) {
+                    details.push(`Requested: ${formatProfessionalList(professionalGuidance.requested)}`);
+                }
+                details.push(`Suggested: ${formatProfessionalList(professionalGuidance.recommended)}`);
+                details.push(professionalGuidance.note);
+            }
 
             if (spec.questions.length > 0) {
                 details.push('', 'Questions:');
@@ -3361,9 +3389,59 @@
             return details.join('\n');
         }
 
+        function normalizeProfessionalLabel(label) {
+            return String(label || '').trim().toLowerCase();
+        }
+
+        function formatProfessionalList(items) {
+            const labels = Array.from(new Set((Array.isArray(items) ? items : []).map(normalizeProfessionalLabel).filter(Boolean)));
+            if (labels.length === 0) {
+                return 'architect and lawyer';
+            }
+
+            return labels.join(' and ');
+        }
+
+        function buildProfessionalGuidance(spec, lawReview = null, lawReviewError = '') {
+            const requestText = String(spec?.request || '');
+            const lowerRequest = requestText.toLowerCase();
+            const requested = [];
+
+            if (/\blawyer\b|\battorney\b|\blegal\b/i.test(lowerRequest)) {
+                requested.push('lawyer');
+            }
+
+            if (/\barchitect(?:er)?\b|\barchitecture\b|\barchitectural\b/i.test(lowerRequest)) {
+                requested.push('architect');
+            }
+
+            const recommended = new Set(['architect', 'lawyer']);
+            if (spec?.status === 'needs_clarification') {
+                recommended.add('architect');
+            }
+            if (lawReviewError || lawReview?.safeToProceed === false) {
+                recommended.add('lawyer');
+            }
+
+            const requestedLabel = requested.length > 0 ? formatProfessionalList(requested) : '';
+            const note = requestedLabel
+                ? `Requested professional support: ${requestedLabel}.`
+                : lawReviewError
+                    ? 'A local lawyer should review zoning and permit questions before final issue.'
+                    : lawReview?.safeToProceed === false
+                        ? 'A lawyer should review the flagged compliance items before final issue.'
+                        : 'For final issue, talk to a licensed architect for design review and a local lawyer for zoning and permit checks.';
+
+            return {
+                requested,
+                recommended: Array.from(recommended),
+                note
+            };
+        }
+
         const HOUSE_PLANNER_API_BASE = (typeof window.HOUSE_PLANNER_API_BASE === 'string' && window.HOUSE_PLANNER_API_BASE.trim())
             ? window.HOUSE_PLANNER_API_BASE.trim().replace(/\/+$/, '')
-            : 'http://localhost:3000';
+            : 'http://localhost:3001';
 
         function normalizeHouseRequestText(requestText) {
             return String(requestText || '')
@@ -3480,13 +3558,20 @@
                 const lawReview = responsePayload.lawReview || null;
                 const lawReviewError = responsePayload.lawReviewError || '';
                 const dslPreview = buildHouseDslPreview(spec);
+                const professionalGuidance = buildProfessionalGuidance(spec, lawReview, lawReviewError);
+                spec.outputs = {
+                    ...(spec.outputs || {}),
+                    ar: true
+                };
+                spec.professionalGuidance = professionalGuidance;
                 window.cadState.houseSpec = spec;
                 window.cadState.houseDslPreview = dslPreview;
                 window.cadState.lawReview = lawReview;
                 window.cadState.lawReviewError = lawReviewError;
+                window.cadState.professionalGuidance = professionalGuidance;
 
                 if (outputElement) {
-                    outputElement.textContent = formatHouseOutput(spec, dslPreview);
+                    outputElement.textContent = formatHouseOutput(spec, dslPreview, lawReview, lawReviewError);
                 }
 
                 if (lawReviewOutput) {
@@ -3495,12 +3580,13 @@
 
                 if (spec.status === 'ready') {
                     const rendered = renderHouseFromSpec(spec);
+                    const arSuffix = spec.outputs?.ar ? ' AR preview is available.' : '';
                     if (lawReview && lawReview.safeToProceed === false) {
-                        updateInfo(`Generated ${spec.building.totalStoreys}-storey ${spec.building.style} house (${rendered} meshes), but the law review flagged issues`);
+                        updateInfo(`Generated ${spec.building.totalStoreys}-storey ${spec.building.style} house (${rendered} meshes)${arSuffix} but the law review flagged issues`);
                     } else if (lawReview) {
-                        updateInfo(`Generated ${spec.building.totalStoreys}-storey ${spec.building.style} house (${rendered} meshes) and completed the law review`);
+                        updateInfo(`Generated ${spec.building.totalStoreys}-storey ${spec.building.style} house (${rendered} meshes)${arSuffix} and completed the law review`);
                     } else {
-                        updateInfo(`Generated ${spec.building.totalStoreys}-storey ${spec.building.style} house (${rendered} meshes)`);
+                        updateInfo(`Generated ${spec.building.totalStoreys}-storey ${spec.building.style} house (${rendered} meshes)${arSuffix}`);
                     }
                 } else {
                     if (lawReviewOutput) {
@@ -3565,6 +3651,7 @@
             window.cadState.houseDslPreview = '';
             window.cadState.lawReview = null;
             window.cadState.lawReviewError = '';
+            window.cadState.professionalGuidance = null;
             window.cadState.housePalette = { ...DEFAULT_HOUSE_PALETTE };
             if (output) {
                 output.textContent = 'Restored the default villa model.';
@@ -3580,7 +3667,59 @@
         window.generateHouseFromPrompt = generateHouseFromPrompt;
         window.submitHouseGeneratorPrompt = submitHouseGeneratorPrompt;
         window.toggleHouseGenerator = toggleHouseGenerator;
+        window.enterHouseInAR = enterHouseInAR;
         window.restoreDefaultHouse = restoreDefaultHouse;
+
+        async function enterHouseInAR() {
+            const scene = window.cadState.scene;
+            if (!scene) {
+                updateInfo('Load the scene before starting AR');
+                return false;
+            }
+
+            if (!navigator.xr || typeof navigator.xr.isSessionSupported !== 'function') {
+                updateInfo('WebXR AR is not available in this browser');
+                return false;
+            }
+
+            const supported = await navigator.xr.isSessionSupported('immersive-ar').catch(() => false);
+            if (!supported) {
+                updateInfo('Immersive AR is not supported on this device');
+                return false;
+            }
+
+            try {
+                if (!window.cadState.arExperience) {
+                    const floorMesh = typeof scene.getMeshByName === 'function' ? scene.getMeshByName('sceneGround') : null;
+                    window.cadState.arExperience = await scene.createDefaultXRExperienceAsync({
+                        floorMeshes: floorMesh ? [floorMesh] : [],
+                        uiOptions: {
+                            sessionMode: 'immersive-ar',
+                            referenceSpaceType: 'local-floor'
+                        }
+                    });
+                }
+
+                const xrExperience = window.cadState.arExperience;
+                if (xrExperience?.baseExperience?.state === BABYLON.WebXRState?.IN_XR) {
+                    updateInfo('AR session is already active');
+                    return true;
+                }
+
+                if (xrExperience?.baseExperience && typeof xrExperience.baseExperience.enterXRAsync === 'function') {
+                    await xrExperience.baseExperience.enterXRAsync('immersive-ar', 'local-floor');
+                    updateInfo('AR session started');
+                    return true;
+                }
+
+                updateInfo('AR experience could not be created');
+                return false;
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                updateInfo(`AR launch failed: ${message}`);
+                return false;
+            }
+        }
 
         function getFloorPlanCollection() {
             return window.cadState.floorPlans || FLOOR_PLAN_DATA;

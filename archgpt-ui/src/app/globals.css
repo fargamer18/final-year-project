@@ -1,0 +1,81 @@
+@import "tailwindcss";
+
+:root {
+  --background: #050608;
+  --foreground: #eef2ff;
+  color-scheme: dark;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at top, rgba(168, 85, 247, 0.16), transparent 28%),
+    radial-gradient(circle at right, rgba(236, 72, 153, 0.09), transparent 24%),
+    linear-gradient(180deg, #090b10 0%, #050608 100%);
+  color: var(--foreground);
+  font-family: var(--font-geist-sans), "Segoe UI", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+.generator-overlay {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.generator-dialog {
+  max-height: calc(100vh - 1rem);
+}
+
+.generator-content-grid,
+.generator-preview-pane,
+.generator-controls-pane {
+  min-height: 0;
+}
+
+.generator-preview-pane,
+.generator-controls-pane {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* Universal fallback for fixed full-screen modals */
+.fixed.inset-0.z-50.flex {
+  overflow-y: auto !important;
+  overscroll-behavior: contain;
+}
+
+.fixed.inset-0.z-50.flex > .absolute.inset-0 {
+  pointer-events: none;
+}
+
+.fixed.inset-0.z-50.flex > :not(.absolute) {
+  max-height: calc(100vh - 1rem);
+  overflow-y: auto !important;
+}
+
+/* Fallback for legacy popup markup still seen in some sessions */
+.fixed.inset-0.z-50.flex.items-center.justify-center.px-4.py-6 {
+  overflow-y: auto !important;
+  align-items: flex-start !important;
+  padding-top: 0.75rem !important;
+  padding-bottom: 0.75rem !important;
+}
+
+.fixed.inset-0.z-50.flex.items-center.justify-center.px-4.py-6 > :first-child {
+  pointer-events: none;
+}
+
+.fixed.inset-0.z-50.flex.items-center.justify-center.px-4.py-6 > :not(:first-child) {
+  max-height: calc(100vh - 1.5rem);
+  overflow-y: auto !important;
+}
