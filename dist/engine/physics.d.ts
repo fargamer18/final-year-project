@@ -5,10 +5,10 @@ export declare class PhysicsSimulator {
     private earthquakeAmplitude;
     private earthquakeFrequency;
     private physicsEnabled;
+    private earthquakeCallback;
     constructor(scene: BABYLON.Scene);
     isPhysicsReady(): boolean;
     private initializePhysics;
-    private setupPhysics;
     startEarthquake(duration?: number): void;
     stopEarthquake(): void;
     setEarthquakeIntensity(amplitude: number, frequency: number): void;

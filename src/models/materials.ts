@@ -310,9 +310,16 @@ export const MATERIAL_LIBRARY: Record<string, MaterialDefinition> = {
     }
 };
 
+// Build a case-insensitive lookup map at module load time
+const MATERIAL_LOOKUP: Record<string, string> = {};
+for (const key of Object.keys(MATERIAL_LIBRARY)) {
+    MATERIAL_LOOKUP[key.toLowerCase()] = key;
+}
+
 export function getMaterial(name: string): MaterialDefinition {
     const lower = name.toLowerCase();
-    return MATERIAL_LIBRARY[lower] || MATERIAL_LIBRARY.default;
+    const resolvedKey = MATERIAL_LIBRARY[lower] ? lower : MATERIAL_LOOKUP[lower];
+    return resolvedKey ? MATERIAL_LIBRARY[resolvedKey] : MATERIAL_LIBRARY.default;
 }
 
 export function listMaterials(): string[] {

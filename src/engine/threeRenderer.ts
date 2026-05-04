@@ -18,9 +18,19 @@ export class ThreeRenderer {
     }
 
     public render(model: DSLModel): void {
-        // Clear existing meshes from the scene
-        while(this.scene.children.length > 0) { 
-            this.scene.remove(this.scene.children[0]);
+        // Dispose and clear existing meshes from the scene
+        while(this.scene.children.length > 0) {
+            const child = this.scene.children[0];
+            if ((child as THREE.Mesh).geometry) {
+                (child as THREE.Mesh).geometry.dispose();
+            }
+            const mat = (child as THREE.Mesh).material;
+            if (Array.isArray(mat)) {
+                mat.forEach(m => m.dispose());
+            } else if (mat) {
+                mat.dispose();
+            }
+            this.scene.remove(child);
         }
 
         // Add new meshes based on the model

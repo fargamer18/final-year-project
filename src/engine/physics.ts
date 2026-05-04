@@ -8,6 +8,7 @@ export class PhysicsSimulator {
     private earthquakeAmplitude: number = 1.0;
     private earthquakeFrequency: number = 3;
     private physicsEnabled: boolean = false;
+    private earthquakeCallback: (() => void) | null = null;
 
     constructor(scene: BABYLON.Scene) {
         this.scene = scene;
@@ -78,74 +79,41 @@ export class PhysicsSimulator {
         }
     }
 
-    private async setupPhysics(): Promise<void> {
-        if (!CANNON) {
-            console.error('Cannon.js is not loaded');
-            return;
-        }
-
-        const gravityVector = new BABYLON.Vector3(0, -9.81, 0);
-        const physicsPlugin = new BABYLON.CannonJSPlugin(true, 10, CANNON);
-        this.scene.enablePhysics(gravityVector, physicsPlugin);
-
-        // Create a ground that will receive shadows
-        this.ground = BABYLON.MeshBuilder.CreateGround("ground", {
-            width: 20,
-            height: 20
-        }, this.scene);
-
-        // Give it a material
-        const groundMaterial = new BABYLON.StandardMaterial("groundMaterial", this.scene);
-        groundMaterial.diffuseColor = new BABYLON.Color3(0.5, 0.5, 0.5);
-        this.ground.material = groundMaterial;
-
-        // Add physics impostor
-        this.ground.physicsImpostor = new BABYLON.PhysicsImpostor(
-            this.ground,
-            BABYLON.PhysicsImpostor.BoxImpostor,
-            { mass: 0, restitution: 0.9, friction: 0.5 },
-            this.scene
-        );
-    }
 
     public startEarthquake(duration: number = 5000): void {
         if (this.isEarthquakeActive) return;
         this.isEarthquakeActive = true;
 
-        // Add earthquake motion to the ground
-        this.scene.registerBeforeRender(() => {
-            if (this.isEarthquakeActive) {
-                const time = Date.now() / 1000;
-                const offsetX = this.earthquakeAmplitude * Math.sin(this.earthquakeFrequency * time);
-                const offsetZ = this.earthquakeAmplitude * Math.cos(this.earthquakeFrequency * time);
-                
-                this.ground.position.x = offsetX;
-                this.ground.position.z = offsetZ;
-                
-                // Apply forces to all physics-enabled objects
-                this.scene.meshes.forEach(mesh => {
-                    if (mesh.physicsImpostor && mesh !== this.ground) {
-                        try {
-                            // Convert world position to local space if mesh has a parent
-                            const worldPos = mesh.getAbsolutePosition();
-                            const force = new BABYLON.Vector3(
-                                offsetX * 100,
-                                Math.abs(offsetX * offsetZ) * 40 + Math.random() * 10, // Add some vertical force with randomness
-                                offsetZ * 100
-                            );
-                            
-                            // Apply force at the mesh's position
-                            mesh.physicsImpostor.applyForce(
-                                force,
-                                worldPos
-                            );
-                        } catch (e) {
-                            console.warn('Failed to apply earthquake force to mesh:', mesh.name, e);
-                        }
+        // Store the callback so we can unregister it later
+        this.earthquakeCallback = () => {
+            if (!this.isEarthquakeActive) return;
+
+            const time = Date.now() / 1000;
+            const offsetX = this.earthquakeAmplitude * Math.sin(this.earthquakeFrequency * time);
+            const offsetZ = this.earthquakeAmplitude * Math.cos(this.earthquakeFrequency * time);
+
+            this.ground.position.x = offsetX;
+            this.ground.position.z = offsetZ;
+
+            // Apply forces to all physics-enabled objects
+            this.scene.meshes.forEach(mesh => {
+                if (mesh.physicsImpostor && mesh !== this.ground) {
+                    try {
+                        const worldPos = mesh.getAbsolutePosition();
+                        const force = new BABYLON.Vector3(
+                            offsetX * 100,
+                            Math.abs(offsetX * offsetZ) * 40 + Math.random() * 10,
+                            offsetZ * 100
+                        );
+                        mesh.physicsImpostor.applyForce(force, worldPos);
+                    } catch (e) {
+                        console.warn('Failed to apply earthquake force to mesh:', mesh.name, e);
                     }
-                });
-            }
-        });
+                }
+            });
+        };
+
+        this.scene.registerBeforeRender(this.earthquakeCallback);
 
         // Stop earthquake after duration
         setTimeout(() => {
@@ -155,6 +123,10 @@ export class PhysicsSimulator {
 
     public stopEarthquake(): void {
         this.isEarthquakeActive = false;
+        if (this.earthquakeCallback) {
+            this.scene.unregisterBeforeRender(this.earthquakeCallback);
+            this.earthquakeCallback = null;
+        }
         this.ground.position = BABYLON.Vector3.Zero();
     }
 

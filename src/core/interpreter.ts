@@ -10,10 +10,11 @@ export class DSLInterpreter {
             ast = [ast];
         }
 
-        ast.forEach((command: any) => {
-            if (!command.type) throw new Error('Invalid AST node');
-            // very small simulation of execution
-            console.log('Executing command', command.type, command.properties || command);
+        ast.forEach((node: any) => {
+            // Parser returns 'type' for shape commands, 'command' for transform commands
+            const kind = node.type || node.command;
+            if (!kind) throw new Error('Invalid AST node');
+            console.log('Executing command', kind, node.properties || node);
         });
 
         return true;

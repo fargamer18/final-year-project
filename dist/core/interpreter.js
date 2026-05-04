@@ -9,11 +9,12 @@ export class DSLInterpreter {
         if (!Array.isArray(ast)) {
             ast = [ast];
         }
-        ast.forEach((command) => {
-            if (!command.type)
+        ast.forEach((node) => {
+            // Parser returns 'type' for shape commands, 'command' for transform commands
+            const kind = node.type || node.command;
+            if (!kind)
                 throw new Error('Invalid AST node');
-            // very small simulation of execution
-            console.log('Executing command', command.type, command.properties || command);
+            console.log('Executing command', kind, node.properties || node);
         });
         return true;
     }

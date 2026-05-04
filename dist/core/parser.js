@@ -22,7 +22,7 @@ export class DSLParser {
         // 4. Material commands: 'applyMaterial to id { material: "oak" }'
         // Try shape/create syntax first
         const createMatch = /create\s+(\w+)\s*\{([^}]*)\}/i.exec(dslString);
-        const blockMatch = /^(\w+)\s*\{([^}]*)\}$/i.exec(dslString.trim());
+        const blockMatch = /(\w+)\s*\{([^}]*)\}/i.exec(dslString.trim());
         // Try transform commands
         const moveMatch = /move\s+(\w+)\s+to\s+([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)/i.exec(dslString);
         const rotateMatch = /rotate\s+(\w+)\s+by\s+([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)/i.exec(dslString);

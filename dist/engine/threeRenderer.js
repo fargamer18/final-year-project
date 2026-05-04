@@ -10,9 +10,20 @@ export class ThreeRenderer {
         this.camera.position.z = 5;
     }
     render(model) {
-        // Clear existing meshes from the scene
+        // Dispose and clear existing meshes from the scene
         while (this.scene.children.length > 0) {
-            this.scene.remove(this.scene.children[0]);
+            const child = this.scene.children[0];
+            if (child.geometry) {
+                child.geometry.dispose();
+            }
+            const mat = child.material;
+            if (Array.isArray(mat)) {
+                mat.forEach(m => m.dispose());
+            }
+            else if (mat) {
+                mat.dispose();
+            }
+            this.scene.remove(child);
         }
         // Add new meshes based on the model
         model.shapes.forEach((shape) => {

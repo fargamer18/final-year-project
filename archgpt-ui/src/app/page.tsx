@@ -6,6 +6,12 @@ import { Menu, Plus, Sparkles, X } from "lucide-react";
 import { HouseModelViewport } from "../components/HouseModelViewport";
 import { ProfessionalsDrawer } from "../components/ProfessionalsDrawer";
 import { buildHouseDsl } from "../lib/houseDsl";
+import { buildHouseQuestionFlow, classifyHouseConcept, formatHouseConcept, type HouseDecision } from "../lib/houseTaxonomy";
+import { getBlueprint, hasBlueprint, applyModifiers, fitToPlot, type ArchetypeBlueprint } from "../lib/houseBlueprints";
+import { initBlueprints } from "../lib/blueprints";
+import { CadWorkspace } from "../components/CadWorkspace";
+import { DecisionTreeWizard } from "../components/DecisionTreeWizard";
+import { type ArchitecturalIR } from "../lib/spatialSolver";
 
 type Message = { role: "user" | "bot"; content: string };
 type HouseSpec = {
@@ -14,6 +20,7 @@ type HouseSpec = {
   source?: "backend" | "local";
   program?: StructureProgram;
   structureType?: string;
+  houseConcept?: HouseDecision;
   site?: {
     plotWidthFt?: number;
     plotDepthFt?: number;
@@ -74,6 +81,10 @@ type StructureFeatures = {
   hasDoubleHeight: boolean;
   hasCoveredParking: boolean;
   hasTerrace: boolean;
+  hasArcadeRoom: boolean;
+  hasVerandah: boolean;
+  hasPool: boolean;
+  hasHomeOffice: boolean;
 };
 type LawReview = {
   status?: string;
@@ -93,6 +104,7 @@ type PlannerResult = {
   lawReview: LawReview | null;
   lawReviewError: string;
   dsl: string;
+  semanticIR?: ArchitecturalIR;
 };
 type ChatHistoryItem = {
   id: number;
@@ -126,7 +138,24 @@ const GENERATOR_PROMPT_PATTERN = /\b(?:house|home|villa|apartment|bungalow|duple
 const LAW_PROMPT_PATTERN = /\b(?:law|legal|zoning|setback|setbacks|bye[-\s]?law|byelaw|fsi|far|floor area ratio|coverage|building code|regulation|regulations|compliance|permit|approval|sanction|occupancy|planning permission|tree permit|tree removal|tree cutting|tree felling|bbmp|bda|municipal|municipality|town planning|planning authority|loophole|bypass|evade|circumvent|workaround|exempt)\b/i;
 const TREE_ACTION_PROMPT_PATTERN = /\b(?:tree|trees)\b/i;
 const TREE_ACTION_VERB_PATTERN = /\b(?:cut|remove|fell|clear|prune|trim)\b/i;
-const ARCHGPT_API_BASE = (process.env.NEXT_PUBLIC_ARCHGPT_API_BASE || "http://localhost:3001").trim().replace(/\/+$/, "");
+
+// Hard-patched for the current network environment to resolve persistent CORS failures
+const ARCHGPT_API_BASE = "http://192.168.1.10:3001";
+
+async function fetchWithTimeout(resource: string, options: RequestInit & { timeout?: number }) {
+  const { timeout = 15000 } = options;
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeout);
+  try {
+    const response = await fetch(resource, {
+      ...options,
+      signal: controller.signal
+    });
+    return response;
+  } finally {
+    clearTimeout(id);
+  }
+}
 
 function resizeTextarea(element: HTMLTextAreaElement | null, minHeight: number, maxHeight: number) {
   if (!element) {
@@ -440,7 +469,7 @@ function requestHasFeature(prompt: string, featurePattern: RegExp, negatedPatter
   return featurePattern.test(normalizedPrompt);
 }
 
-function inferLocalStoreys(prompt: string, previousSpec: HouseSpec | null) {
+function inferLocalStoreys(prompt: string, previousSpec: HouseSpec | null, preferredStoreys = 2) {
   const gPlusMatch = prompt.match(/\bg\s*\+?\s*(\d+)\b/i);
   if (gPlusMatch) {
     return Math.max(1, Number(gPlusMatch[1]) + 1);
@@ -459,17 +488,50 @@ function inferLocalStoreys(prompt: string, previousSpec: HouseSpec | null) {
     return 1;
   }
 
-  return previousSpec?.building?.totalStoreys || 2;
+  if (/\bstudio\b|\b1\s*rk\b/i.test(prompt)) {
+    return 1;
+  }
+
+  if (/\bfarmhouse\b|\ba[-\s]?frame\b/i.test(prompt)) {
+    return 1;
+  }
+
+  if (/\btownhouse\b|\brow[-\s]?house\b/i.test(prompt)) {
+    return Math.max(2, preferredStoreys || 2);
+  }
+
+  if (/\bvilla\b/i.test(prompt)) {
+    return Math.max(3, preferredStoreys || 3);
+  }
+
+  if (/\bapartment\b/i.test(prompt)) {
+    return Math.max(3, preferredStoreys || 4);
+  }
+
+  if (/\bmixed[-\s]?use\b/i.test(prompt)) {
+    return Math.max(3, preferredStoreys || 3);
+  }
+
+  return previousSpec?.building?.totalStoreys || preferredStoreys || 2;
 }
 
-function inferLocalStyle(prompt: string, previousSpec: HouseSpec | null) {
+function inferLocalStyle(prompt: string, previousSpec: HouseSpec | null, preferredStyle = "") {
   const styleRules: Array<[RegExp, string]> = [
-    [/\bmodern\b/i, "modern"],
     [/\bcontemporary\b/i, "contemporary"],
+    [/\bmodern\b/i, "modern"],
     [/\bminimal\b/i, "minimal"],
     [/\bluxury\b/i, "luxury"],
     [/\btraditional\b/i, "traditional"],
     [/\bheritage\b/i, "heritage"],
+    [/\bindian\b/i, "indian"],
+    [/\ba[-\s]?frame\b/i, "a-frame"],
+    [/\bfarmhouse\b/i, "farmhouse"],
+    [/\bbungalow\b/i, "bungalow"],
+    [/\btownhouse\b/i, "townhouse"],
+    [/\brow[-\s]?house\b/i, "row-house"],
+    [/\bduplex\b/i, "duplex"],
+    [/\bstudio\b/i, "studio"],
+    [/\b1\s*rk\b/i, "studio"],
     [/\bvilla\b/i, "villa"],
   ];
 
@@ -477,6 +539,10 @@ function inferLocalStyle(prompt: string, previousSpec: HouseSpec | null) {
     if (pattern.test(prompt)) {
       return style;
     }
+  }
+
+  if (preferredStyle) {
+    return preferredStyle;
   }
 
   return previousSpec?.building?.style || "contemporary";
@@ -532,10 +598,14 @@ function inferLocalFeatures(prompt: string): StructureFeatures {
     hasDoubleHeight: requestHasFeature(prompt, /\bdouble[-\s]?height\b/i, [/\bno\s+double[-\s]?height\b/i, /\bwithout\s+double[-\s]?height\b/i]),
     hasCoveredParking: requestHasFeature(prompt, /\bcovered\s+parking\b|\bstilt\s+parking\b/i, [/\bopen\s+parking\b/i, /\bno\s+parking\b/i]),
     hasTerrace: requestHasFeature(prompt, /\bterrace\b|\broof\s*deck\b|\brooftop\b/i, [/\bno\s+terrace\b/i, /\bwithout\s+terrace\b/i]),
+    hasVerandah: requestHasFeature(prompt, /\bverandah\b|\bveranda\b|\bporch\b/i, [/\bno\s+verandah\b/i, /\bwithout\s+verandah\b/i]),
+    hasPool: requestHasFeature(prompt, /\bpool\b/i, [/\bno\s+pool\b/i, /\bwithout\s+pool\b/i]),
+    hasHomeOffice: requestHasFeature(prompt, /\bhome\s+office\b|\bworkspace\b|\bstudy\b/i, [/\bno\s+office\b/i, /\bwithout\s+office\b/i]),
+    hasArcadeRoom: requestHasFeature(prompt, /\barcade\b|\bgame\s+room\b|\bgame\s+zone\b|\brecreation\s+room\b|\bentertainment\s+room\b|\bmedia\s+room\b/i, [/\bno\s+arcade\b/i, /\bwithout\s+arcade\b/i]),
   };
 }
 
-function inferStructureProgram(prompt: string, style: string, previousProgram: StructureProgram | null = null): StructureProgram {
+function inferStructureProgram(prompt: string, style: string, previousProgram: StructureProgram | null = null, preferredProgram: StructureProgram | null = null): StructureProgram {
   const normalizedPrompt = String(prompt || "");
   const matchedProgram: Array<[RegExp, StructureProgram]> = [
     [/\bmixed[-\s]?use\b/i, "mixed-use"],
@@ -564,7 +634,7 @@ function inferStructureProgram(prompt: string, style: string, previousProgram: S
     return "villa";
   }
 
-  return previousProgram || "house";
+  return preferredProgram || previousProgram || "house";
 }
 
 function getStructureProgramLabel(program: StructureProgram) {
@@ -652,6 +722,7 @@ function buildLocalFloors(storeys: number, parkingCars: number, features: Struct
   const floors: FloorPlan[] = [];
   const isResidential = program === "house" || program === "villa" || program === "apartment" || program === "mixed-use";
   const isVillaStyle = program === "villa" || style === "villa" || style === "luxury";
+  const isCountryStyle = style === "farmhouse" || style === "bungalow" || style === "a-frame";
   const bedroomRooms = Array.from({ length: Math.max(1, bedroomCount) }, (_, index) => (index === 0 ? "master bedroom" : `bedroom ${index + 1}`));
   const bedroomSlot = (index: number, fallback: string) => bedroomRooms[index] || fallback;
   const parkingLabel = features.hasCoveredParking ? `covered parking for ${parkingCars > 1 ? `${parkingCars} cars` : "1 car"}` : parkingCars > 1 ? `parking for ${parkingCars} cars` : "parking for 1 car";
@@ -719,7 +790,7 @@ function buildLocalFloors(storeys: number, parkingCars: number, features: Struct
     },
     villa: (floorIndex) => {
       if (floorIndex === 0) return [parkingLabel, "front veranda", features.hasCourtyard ? "courtyard" : "double-height lounge", "formal dining", "kitchen", "utility", "powder room"];
-      if (floorIndex === 1) return [bedroomRooms[0], bedroomRooms[1] || "bedroom 2", "family lounge", features.hasTerrace ? "terrace" : "balcony", "shared bath"];
+      if (floorIndex === 1) return [bedroomRooms[0], bedroomRooms[1] || "bedroom 2", "family lounge", features.hasArcadeRoom ? "arcade room" : "study / library", features.hasTerrace ? "terrace" : "balcony", "shared bath"];
       if (floorIndex === 2) return [bedroomRooms[2] || "guest suite", "study / library", features.hasTerrace ? "open terrace" : "balcony", "store room", "service wash area"];
       return ["multi-purpose room", "terrace garden", "sky deck", "services deck"];
     },
@@ -808,20 +879,77 @@ function buildLocalFloors(storeys: number, parkingCars: number, features: Struct
     }
   }
 
+  if (isResidential && isCountryStyle && floors.length > 0) {
+    const groundFloor = floors.find((floor) => /ground/i.test(floor.level));
+    if (groundFloor && !groundFloor.spaces.some((space) => /verandah|porch/i.test(space))) {
+      groundFloor.spaces.splice(1, 0, style === "bungalow" ? "front porch" : style === "a-frame" ? "covered deck" : "front verandah");
+    }
+  }
+
   return floors;
 }
 
+function buildFloorsFromBlueprint(bp: ArchetypeBlueprint): FloorPlan[] {
+  return bp.floors.map((floor) => ({
+    level: floor.level,
+    spaces: floor.rooms.map((r) => r.name),
+    core: floor.core.length > 0 ? [...floor.core] : undefined,
+  }));
+}
+
 function buildLocalPlannerResult(prompt: string, intent: PromptIntent, previousSpec: HouseSpec | null): PlannerResult {
-  const storeys = inferLocalStoreys(prompt, previousSpec);
-  const style = inferLocalStyle(prompt, previousSpec);
+  // Ensure blueprints are registered
+  initBlueprints();
+
+  const houseConcept = classifyHouseConcept(prompt, previousSpec);
+  const storeys = inferLocalStoreys(prompt, previousSpec, houseConcept.defaultStoreys);
+  const style = inferLocalStyle(prompt, previousSpec, houseConcept.style);
   const plot = inferLocalPlotDimensions(prompt, previousSpec);
   const roadFacing = inferLocalFacing(prompt, previousSpec);
   const parkingCars = inferLocalParkingCars(prompt);
   const bedroomCount = inferLocalBedroomCount(prompt);
   const features = inferLocalFeatures(prompt);
-  const program = inferStructureProgram(prompt, style, previousSpec?.program || null);
+  const program = inferStructureProgram(prompt, style, previousSpec?.program || null, houseConcept.program);
   const plotSpecified = Boolean(plot);
   const structureType = getStructureProgramLabel(program);
+  const questionFlow = buildHouseQuestionFlow(houseConcept, {
+    plotSpecified,
+    hasLift: features.hasLift,
+    hasBasement: features.hasBasement,
+    hasCourtyard: features.hasCourtyard,
+    hasDoubleHeight: features.hasDoubleHeight,
+    hasCoveredParking: features.hasCoveredParking,
+    hasTerrace: features.hasTerrace,
+    hasVerandah: features.hasVerandah,
+    hasPool: features.hasPool,
+    hasHomeOffice: features.hasHomeOffice,
+    bedroomCount,
+    parkingCars,
+  });
+
+  // ── Blueprint path: use premade blueprint when available ──────
+  let blueprintFloors: FloorPlan[] | null = null;
+  let blueprintSource = "";
+  let blueprintStoreys = storeys;
+  let blueprintHasBasement = features.hasBasement;
+  let blueprintHasLift = features.hasLift;
+  if (hasBlueprint(houseConcept.archetype)) {
+    let bp = getBlueprint(houseConcept.archetype)!;
+    // Apply modifiers (lift, basement, courtyard, etc.)
+    bp = applyModifiers(bp, houseConcept.modifiers);
+    // Fit to user-provided plot dimensions
+    if (plot) {
+      bp = fitToPlot(bp, plot.plotWidthFt, plot.plotDepthFt);
+    }
+    blueprintFloors = buildFloorsFromBlueprint(bp);
+    blueprintSource = `Premade ${bp.label} blueprint with ${bp.floors.length} floors, ${bp.floors.reduce((n, f) => n + f.rooms.length, 0)} rooms.`;
+    // Override storeys/features from the blueprint
+    const hasBasementFloor = bp.floors.some((f) => /basement/i.test(f.level));
+    const aboveGroundFloors = bp.floors.filter((f) => !/basement/i.test(f.level)).length;
+    blueprintStoreys = Math.max(storeys, aboveGroundFloors);
+    blueprintHasBasement = blueprintHasBasement || hasBasementFloor;
+    blueprintHasLift = blueprintHasLift || bp.floors.some((f) => f.core.includes("lift core"));
+  }
 
   const spec: HouseSpec = {
     status: "editable plan + 3D model",
@@ -829,6 +957,7 @@ function buildLocalPlannerResult(prompt: string, intent: PromptIntent, previousS
     source: "local",
     program,
     structureType,
+    houseConcept,
     site: {
       roadFacing,
       mainEntranceFacing: roadFacing,
@@ -840,16 +969,19 @@ function buildLocalPlannerResult(prompt: string, intent: PromptIntent, previousS
         : {}),
     },
     building: {
-      totalStoreys: storeys,
+      totalStoreys: blueprintStoreys,
       style,
     },
     facade: {
       mainEntranceFacing: roadFacing,
     },
-    floors: buildLocalFloors(storeys, parkingCars, features, style, program, bedroomCount),
+    floors: blueprintFloors ?? buildLocalFloors(storeys, parkingCars, features, style, program, bedroomCount),
     notes: [
+      `House decision tree branch: ${formatHouseConcept(houseConcept)}.`,
+      houseConcept.summary,
       `Structure program inferred from the prompt: ${structureType}.`,
       "DSL is generated directly in the popup and rendered as an editable plan plus 3D model.",
+      blueprintSource || "No premade blueprint available for this archetype; using generic floor generation.",
       plotSpecified
         ? `Plot size taken from your request: ${plot?.plotWidthFt} ft x ${plot?.plotDepthFt} ft.`
         : "Plot size was not provided, so the DSL-driven model keeps the footprint open.",
@@ -857,17 +989,14 @@ function buildLocalPlannerResult(prompt: string, intent: PromptIntent, previousS
       program === "villa" ? "Villa massing uses stepped floors, a front portico, and lighter materials." : program === "apartment" ? "Apartment massing keeps stacked residential levels and a clear service core." : "Model keeps the local DSL simple and prompt-driven.",
       features.hasLift ? "Lift core runs through the stack in 3D." : "No lift requested in the prompt.",
       features.hasCourtyard ? "Courtyard is represented in the floor map." : "No courtyard requested in the prompt.",
+      features.hasArcadeRoom ? "Arcade room is represented on the villa upper floor." : "No arcade room requested.",
+      features.hasVerandah ? "Verandah or porch space is represented in the tree." : "No verandah or porch requested.",
+      features.hasPool ? "Pool or water-court intent is tracked in the tree." : "No pool requested.",
       features.hasDoubleHeight ? "Double-height space is carried into the plan and 3D preview." : "No double-height space requested.",
       features.hasCoveredParking ? "Covered parking is shown on the ground level." : "Parking remains open/unspecified in the plan.",
       `Requested as a ${intent} prompt with an estimated ${bedroomCount} BHK layout.`,
     ],
-    questions: [
-      plotSpecified ? "Do you want setbacks and room sizing finalized from this plot?" : "What is the plot width and depth in feet?",
-      features.hasLift ? "Do you want the lift core centered or offset to one side?" : "Should I add a lift core?",
-      features.hasBasement ? "Should the basement be parking, storage, or a utility level?" : "Should I add a basement level?",
-      features.hasCourtyard ? "Should the courtyard stay open or become a covered atrium?" : "Should I add a courtyard or atrium?",
-      "Confirm setbacks and local bye-laws before final issue.",
-    ],
+    questions: questionFlow,
   };
 
   return {
@@ -878,14 +1007,165 @@ function buildLocalPlannerResult(prompt: string, intent: PromptIntent, previousS
   };
 }
 
+type FloorRoomPlacement = {
+  roomIndex: number;
+  space: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  category: string;
+};
+
+function getRoomCategory(space: string) {
+  const lower = String(space || "").toLowerCase();
+
+  if (/arcade|game|recreation|entertainment|media/.test(lower)) {
+    return "ENTERTAINMENT";
+  }
+  if (/parking|garage/.test(lower)) {
+    return "PARKING";
+  }
+  if (/living|lounge|family/.test(lower)) {
+    return "LIVING";
+  }
+  if (/kitchen/.test(lower)) {
+    return "KITCHEN";
+  }
+  if (/dining/.test(lower)) {
+    return "DINING";
+  }
+  if (/bedroom|suite/.test(lower)) {
+    return "BEDROOM";
+  }
+  if (/bath|powder|wash/.test(lower)) {
+    return "WET AREA";
+  }
+  if (/balcony|terrace|open/.test(lower)) {
+    return "OPEN TO SKY";
+  }
+  if (/utility|storage|service|pump|lobby|foyer|entry|study|office/.test(lower)) {
+    return "SERVICE";
+  }
+  if (/courtyard|veranda|porch/.test(lower)) {
+    return "SIT OUT";
+  }
+
+  return "SPACE";
+}
+
+function buildRoomPlacements(
+  floor: FloorPlan,
+  aboveGroundIndex: number,
+  planLeft: number,
+  planTop: number,
+  planWidth: number,
+  planHeight: number,
+  isVillaLike: boolean,
+): FloorRoomPlacement[] {
+  const spaces = floor.spaces.length > 0 ? floor.spaces : ["open space"];
+  const frameLeft = planLeft + 10;
+  const frameTop = planTop + 10;
+  const frameWidth = planWidth - 20;
+  const frameHeight = planHeight - 20;
+
+  const toPlacement = (roomIndex: number, space: string, template: { left: number; top: number; width: number; height: number }): FloorRoomPlacement => ({
+    roomIndex,
+    space,
+    x: frameLeft + template.left * frameWidth,
+    y: frameTop + template.top * frameHeight,
+    width: template.width * frameWidth,
+    height: template.height * frameHeight,
+    category: getRoomCategory(space),
+  });
+
+  if (isVillaLike && aboveGroundIndex >= 0) {
+    const villaTemplates: Array<Array<{ left: number; top: number; width: number; height: number }>> = [
+      [
+        { left: 0.00, top: 0.00, width: 0.22, height: 0.28 },
+        { left: 0.22, top: 0.00, width: 0.16, height: 0.20 },
+        { left: 0.38, top: 0.00, width: 0.34, height: 0.34 },
+        { left: 0.72, top: 0.00, width: 0.28, height: 0.20 },
+        { left: 0.22, top: 0.20, width: 0.30, height: 0.22 },
+        { left: 0.52, top: 0.20, width: 0.22, height: 0.18 },
+        { left: 0.74, top: 0.20, width: 0.14, height: 0.16 },
+        { left: 0.88, top: 0.20, width: 0.12, height: 0.16 },
+      ],
+      [
+        { left: 0.00, top: 0.00, width: 0.30, height: 0.30 },
+        { left: 0.30, top: 0.00, width: 0.30, height: 0.30 },
+        { left: 0.60, top: 0.00, width: 0.40, height: 0.30 },
+        { left: 0.00, top: 0.32, width: 0.64, height: 0.24 },
+        { left: 0.64, top: 0.32, width: 0.36, height: 0.24 },
+      ],
+      [
+        { left: 0.00, top: 0.00, width: 0.34, height: 0.30 },
+        { left: 0.34, top: 0.00, width: 0.28, height: 0.30 },
+        { left: 0.62, top: 0.00, width: 0.38, height: 0.30 },
+        { left: 0.00, top: 0.30, width: 0.50, height: 0.22 },
+        { left: 0.50, top: 0.30, width: 0.50, height: 0.22 },
+      ],
+    ];
+
+    const selectedTemplates = villaTemplates[Math.min(aboveGroundIndex, villaTemplates.length - 1)];
+    return spaces.map((space, roomIndex) => {
+      const template = selectedTemplates[roomIndex];
+      if (template) {
+        return toPlacement(roomIndex, space, template);
+      }
+
+      const fallbackColumns = Math.max(2, Math.min(3, spaces.length));
+      const fallbackRows = Math.max(1, Math.ceil(spaces.length / fallbackColumns));
+      const fallbackGap = Math.max(6, Math.min(10, Math.round(frameWidth * 0.016)));
+      const fallbackWidth = (frameWidth - fallbackGap * (fallbackColumns - 1)) / fallbackColumns;
+      const fallbackHeight = (frameHeight - fallbackGap * (fallbackRows - 1)) / fallbackRows;
+      const column = roomIndex % fallbackColumns;
+      const row = Math.floor(roomIndex / fallbackColumns);
+
+      return {
+        roomIndex,
+        space,
+        x: frameLeft + column * (fallbackWidth + fallbackGap),
+        y: frameTop + row * (fallbackHeight + fallbackGap),
+        width: fallbackWidth,
+        height: fallbackHeight,
+        category: getRoomCategory(space),
+      };
+    });
+  }
+
+  const columns = spaces.length > 4 ? 3 : spaces.length > 2 ? 2 : 1;
+  const rows = Math.max(1, Math.ceil(spaces.length / columns));
+  const gap = Math.max(6, Math.min(10, Math.round(frameWidth * 0.016)));
+  const tileWidth = (frameWidth - gap * (columns - 1)) / columns;
+  const tileHeight = (frameHeight - gap * (rows - 1)) / rows;
+
+  return spaces.map((space, roomIndex) => {
+    const column = roomIndex % columns;
+    const row = Math.floor(roomIndex / columns);
+
+    return {
+      roomIndex,
+      space,
+      x: frameLeft + column * (tileWidth + gap),
+      y: frameTop + row * (tileHeight + gap),
+      width: tileWidth,
+      height: tileHeight,
+      category: getRoomCategory(space),
+    };
+  });
+}
+
 function buildEmergencyPlannerResult(prompt: string, error: unknown): PlannerResult {
   const message = error instanceof Error ? error.message : String(error || "Draft generation unavailable");
+  const houseConcept = classifyHouseConcept(prompt, null);
   const spec: HouseSpec = {
     status: "editable plan + 3D model",
     request: prompt,
     source: "local",
     program: "house",
     structureType: "house",
+    houseConcept,
     site: {},
     building: {
       totalStoreys: 1,
@@ -909,6 +1189,7 @@ function formatHouseSummary(spec: HouseSpec, lawReview: LawReview | null, lawRev
   const plotWidth = spec?.site?.plotWidthFt;
   const plotDepth = spec?.site?.plotDepthFt;
   const structureLabel = spec?.structureType || spec?.program || spec?.building?.style || "unknown";
+  const conceptLabel = spec?.houseConcept ? formatHouseConcept(spec.houseConcept) : "not classified";
   const plotLabel =
     typeof plotWidth === "number" && plotWidth > 0 && typeof plotDepth === "number" && plotDepth > 0
       ? `${plotWidth} ft x ${plotDepth} ft`
@@ -918,6 +1199,7 @@ function formatHouseSummary(spec: HouseSpec, lawReview: LawReview | null, lawRev
     `Status: ${spec?.status || "unknown"}`,
     `Request: ${spec?.request || "unknown"}`,
     `Structure: ${structureLabel}`,
+    `Concept: ${conceptLabel}`,
     `Plot: ${plotLabel}`,
     `Storeys: ${spec?.building?.totalStoreys ?? "unknown"}`,
     `Style: ${spec?.building?.style || "unknown"}`,
@@ -1069,6 +1351,11 @@ function buildBotReply(spec: HouseSpec, lawReview: LawReview | null, lawReviewEr
     reply.push("The backend spec is converted into DSL and rendered as an editable plan inside the workspace.");
   }
 
+  if (spec?.houseConcept) {
+    reply.push(`House concept: ${formatHouseConcept(spec.houseConcept)}.`);
+    reply.push(`Decision tree: ${spec.houseConcept.summary}`);
+  }
+
   reply.push(`Professional guidance: ${professionalGuidance.note}`);
 
   if (lawReviewError) {
@@ -1083,7 +1370,8 @@ function buildBotReply(spec: HouseSpec, lawReview: LawReview | null, lawReviewEr
 }
 
 async function requestHousePlan(requestText: string, intent: PromptIntent, previousSpec: HouseSpec | null) {
-  const response = await fetch(`${ARCHGPT_API_BASE}/api/house-spec`, {
+  console.log("[ArchGPT] Requesting house plan...", { intent });
+  const response = await fetchWithTimeout(`${ARCHGPT_API_BASE}/api/house-spec`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -1093,6 +1381,7 @@ async function requestHousePlan(requestText: string, intent: PromptIntent, previ
       intent,
       previousSpec,
     }),
+    timeout: 20000,
   });
 
   const payload = (await response.json().catch(() => ({}))) as HouseSpecResponse;
@@ -1547,15 +1836,87 @@ function HouseDwgViewport({
   const plotDepth = spec?.site?.plotDepthFt;
   const plotSpecified = typeof plotWidth === "number" && plotWidth > 0 && typeof plotDepth === "number" && plotDepth > 0;
   const requestText = String(spec?.request || "");
+  const style = String(spec?.building?.style || "").toLowerCase();
+  const program = spec?.program || inferStructureProgram(requestText, style, spec?.program || null);
+  const isVillaLike = program === "villa" || style === "villa" || style === "luxury";
   const hasLift = hasLiftCore(floors, requestText);
   const hasBasement = hasBasementFloor(floors, requestText);
   const showMeasurementOverlay = showDimensions || activeTool === "measure" || activeTool === "dimension";
   const visibleFloors = floors.length > 0
     ? floors
     : [{ level: "Ground floor", spaces: ["open plan"], core: ["stair core"] }];
+  const showGuideGrid = !isVillaLike;
+  const planTheme = isVillaLike
+    ? {
+        skyStart: "#f6efd9",
+        skyEnd: "#e9dcc3",
+        outerFill: "rgba(251, 246, 235, 0.96)",
+        outerStroke: "rgba(90, 73, 56, 0.18)",
+        gridStrong: "rgba(99, 81, 63, 0.10)",
+        gridWeak: "rgba(99, 81, 63, 0.05)",
+        planFill: "rgba(255, 252, 245, 0.98)",
+        planStroke: "rgba(86, 68, 52, 0.72)",
+        innerStroke: "rgba(86, 68, 52, 0.18)",
+        headerText: "#3f2f22",
+        subText: "#7a6550",
+        coreFill: "rgba(135, 111, 86, 0.08)",
+        coreStroke: "rgba(86, 68, 52, 0.22)",
+        coreText: "#594636",
+        footerFill: "rgba(248, 242, 231, 0.96)",
+        footerStroke: "rgba(86, 68, 52, 0.18)",
+        footerText: "#423427",
+      }
+    : {
+        skyStart: "#111827",
+        skyEnd: "#06070b",
+        outerFill: "rgba(5, 8, 14, 0.55)",
+        outerStroke: "rgba(168, 85, 247, 0.14)",
+        gridStrong: "rgba(196, 181, 253, 0.12)",
+        gridWeak: "rgba(255, 255, 255, 0.04)",
+        planFill: "rgba(15, 23, 42, 0.62)",
+        planStroke: "rgba(255, 255, 255, 0.2)",
+        innerStroke: "rgba(255, 255, 255, 0.08)",
+        headerText: "#f5d0fe",
+        subText: "#94a3b8",
+        coreFill: "rgba(168, 85, 247, 0.08)",
+        coreStroke: "rgba(168, 85, 247, 0.25)",
+        coreText: "#f5d0fe",
+        footerFill: "rgba(6, 8, 12, 0.84)",
+        footerStroke: "rgba(168, 85, 247, 0.16)",
+        footerText: "#f5d0fe",
+      };
 
   const getRoomTone = (space: string) => {
     const lower = space.toLowerCase();
+    if (/arcade|game|recreation|entertainment|media/.test(lower)) {
+      return isVillaLike
+        ? { fill: "rgba(255, 247, 214, 0.98)", stroke: "rgba(135, 94, 46, 0.9)", text: "#613f22" }
+        : { fill: "rgba(251, 191, 36, 0.12)", stroke: "rgba(245, 158, 11, 0.84)", text: "#fef3c7" };
+    }
+    if (isVillaLike) {
+      if (/parking|garage/.test(lower)) {
+        return { fill: "rgba(226, 214, 194, 0.92)", stroke: "rgba(108, 89, 70, 0.84)", text: "#4a3c2d" };
+      }
+      if (/living|lounge|family/.test(lower)) {
+        return { fill: "rgba(250, 245, 236, 0.98)", stroke: "rgba(81, 63, 48, 0.84)", text: "#31271e" };
+      }
+      if (/kitchen|dining/.test(lower)) {
+        return { fill: "rgba(245, 236, 219, 0.97)", stroke: "rgba(130, 96, 56, 0.82)", text: "#53361f" };
+      }
+      if (/bedroom|suite/.test(lower)) {
+        return { fill: "rgba(250, 246, 240, 0.98)", stroke: "rgba(112, 90, 74, 0.82)", text: "#402e23" };
+      }
+      if (/bath|powder|wash/.test(lower)) {
+        return { fill: "rgba(241, 248, 250, 0.98)", stroke: "rgba(90, 130, 147, 0.82)", text: "#355563" };
+      }
+      if (/balcony|terrace|open/.test(lower)) {
+        return { fill: "rgba(246, 240, 220, 0.96)", stroke: "rgba(161, 118, 43, 0.78)", text: "#70521f" };
+      }
+      if (/utility|storage|service|pump|lobby|foyer|entry|study|office/.test(lower)) {
+        return { fill: "rgba(241, 238, 232, 0.98)", stroke: "rgba(118, 103, 93, 0.75)", text: "#4d4238" };
+      }
+      return { fill: "rgba(248, 244, 236, 0.98)", stroke: "rgba(90, 75, 60, 0.72)", text: "#31261b" };
+    }
     if (/parking|garage/.test(lower)) {
       return { fill: "rgba(148, 163, 184, 0.07)", stroke: "rgba(191, 219, 254, 0.78)", text: "#e5e7eb" };
     }
@@ -1618,15 +1979,12 @@ function HouseDwgViewport({
         <div className="space-y-3">
           {visibleFloors.map((floor, floorIndex) => {
             const spaces = floor.spaces.length > 0 ? floor.spaces : ["open space"];
-            const columns = spaces.length > 4 ? 3 : spaces.length > 2 ? 2 : 1;
-            const rows = Math.max(1, Math.ceil(spaces.length / columns));
-            const planLeft = 126;
-            const planTop = 54;
-            const planWidth = 430;
-            const planHeight = 108;
-            const gap = 8;
-            const tileWidth = (planWidth - gap * (columns - 1)) / columns;
-            const tileHeight = (planHeight - gap * (rows - 1)) / rows;
+            const aboveGroundIndex = visibleFloors.slice(0, floorIndex + 1).filter((entry) => !isBasementLevel(entry.level)).length - 1;
+            const planLeft = isVillaLike ? 110 : 126;
+            const planTop = isVillaLike ? 46 : 54;
+            const planWidth = isVillaLike ? 480 : 430;
+            const planHeight = isVillaLike ? 130 : 108;
+            const placements = buildRoomPlacements(floor, aboveGroundIndex, planLeft, planTop, planWidth, planHeight, isVillaLike);
             const coreLabel = floor.core && floor.core.length > 0 ? floor.core.join(" • ") : "stair core";
             const northFacing = spec?.site?.roadFacing || spec?.facade?.mainEntranceFacing || "north";
 
@@ -1652,103 +2010,103 @@ function HouseDwgViewport({
                 <svg className={`block w-full ${embedded ? "h-[212px]" : "h-[228px]"}`} viewBox={`0 0 ${sheetWidth} ${sheetHeight}`} preserveAspectRatio="xMidYMid meet">
                   <defs>
                     <linearGradient id={`dwgSky-${floorIndex}`} x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#111827" />
-                      <stop offset="100%" stopColor="#06070b" />
+                      <stop offset="0%" stopColor={planTheme.skyStart} />
+                      <stop offset="100%" stopColor={planTheme.skyEnd} />
                     </linearGradient>
                     <filter id={`dwgShadow-${floorIndex}`} x="-20%" y="-20%" width="140%" height="140%">
-                      <feDropShadow dx="0" dy="10" stdDeviation="10" floodColor="#000000" floodOpacity="0.42" />
+                      <feDropShadow dx="0" dy="10" stdDeviation="10" floodColor="#000000" floodOpacity={isVillaLike ? 0.24 : 0.42} />
                     </filter>
                   </defs>
 
                   <rect width={sheetWidth} height={sheetHeight} fill={`url(#dwgSky-${floorIndex})`} />
-                  <rect x="14" y="14" width="732" height={contentBottom - contentTop} rx="18" fill="rgba(5,8,14,0.55)" stroke="rgba(168,85,247,0.14)" />
+                  <rect x="14" y="14" width="732" height={contentBottom - contentTop} rx="18" fill={planTheme.outerFill} stroke={planTheme.outerStroke} />
 
-                  <g opacity="0.95" pointerEvents="none">
-                    {gridYs.map((y, gridIndex) => (
-                      <line
-                        key={`grid-y-${floorIndex}-${gridIndex}`}
-                        x1="16"
-                        y1={y}
-                        x2="744"
-                        y2={y}
-                        stroke={gridIndex % 4 === 0 ? "rgba(196,181,253,0.12)" : "rgba(255,255,255,0.04)"}
-                        strokeWidth={gridIndex % 4 === 0 ? 0.7 : 0.45}
-                      />
-                    ))}
-                    {gridXs.map((x, gridIndex) => (
-                      <line
-                        key={`grid-x-${floorIndex}-${gridIndex}`}
-                        x1={x}
-                        y1="16"
-                        x2={x}
-                        y2={contentBottom}
-                        stroke={gridIndex % 4 === 0 ? "rgba(196,181,253,0.12)" : "rgba(255,255,255,0.04)"}
-                        strokeWidth={gridIndex % 4 === 0 ? 0.7 : 0.45}
-                      />
-                    ))}
-                  </g>
+                  {showGuideGrid && (
+                    <g opacity="0.7" pointerEvents="none">
+                      {gridYs.map((y, gridIndex) => (
+                        <line
+                          key={`grid-y-${floorIndex}-${gridIndex}`}
+                          x1="16"
+                          y1={y}
+                          x2="744"
+                          y2={y}
+                          stroke={gridIndex % 4 === 0 ? planTheme.gridStrong : planTheme.gridWeak}
+                          strokeWidth={gridIndex % 4 === 0 ? 0.7 : 0.45}
+                        />
+                      ))}
+                      {gridXs.map((x, gridIndex) => (
+                        <line
+                          key={`grid-x-${floorIndex}-${gridIndex}`}
+                          x1={x}
+                          y1="16"
+                          x2={x}
+                          y2={contentBottom}
+                          stroke={gridIndex % 4 === 0 ? planTheme.gridStrong : planTheme.gridWeak}
+                          strokeWidth={gridIndex % 4 === 0 ? 0.7 : 0.45}
+                        />
+                      ))}
+                    </g>
+                  )}
 
-                  <rect x="16" y="16" width="728" height={contentBottom - 16} rx="16" fill="none" stroke="rgba(230,225,217,0.18)" strokeWidth="0.8" />
+                  <rect x="16" y="16" width="728" height={contentBottom - 16} rx="16" fill="none" stroke={planTheme.innerStroke} strokeWidth="0.8" />
 
-                  <text x="34" y="40" fill="#f5d0fe" fontSize="11" fontWeight="700">
+                  <text x="34" y="40" fill={planTheme.headerText} fontSize="11" fontWeight="700">
                     {floor.level}
                   </text>
-                  <text x="34" y="58" fill="#94a3b8" fontSize="9">
+                  <text x="34" y="58" fill={planTheme.subText} fontSize="9">
                     {spaces.length} rooms • {northFacing} facing • {plotSpecified ? `${plotWidth} × ${plotDepth} ft plot` : "open plot"}
                   </text>
 
-                  <rect x={planLeft - 14} y={planTop - 12} width={planWidth + 28} height={planHeight + 24} rx="16" fill="rgba(2,6,23,0.62)" stroke="rgba(168,85,247,0.22)" strokeDasharray="6 8" filter={`url(#dwgShadow-${floorIndex})`} />
+                  <rect x={planLeft - 14} y={planTop - 12} width={planWidth + 28} height={planHeight + 24} rx={isVillaLike ? 8 : 16} fill={planTheme.outerFill} stroke={planTheme.outerStroke} strokeDasharray="6 8" filter={`url(#dwgShadow-${floorIndex})`} />
                   <rect
                     x={planLeft}
                     y={planTop}
                     width={planWidth}
                     height={planHeight}
-                    rx="12"
-                    fill="rgba(15,23,42,0.62)"
-                    stroke="rgba(255,255,255,0.2)"
-                    strokeWidth="1.1"
+                    rx={isVillaLike ? 0 : 6}
+                    fill={planTheme.planFill}
+                    stroke={planTheme.planStroke}
+                    strokeWidth="1.2"
+                    strokeLinejoin="miter"
                     className={onBlankClick ? "cursor-crosshair" : undefined}
                     onClick={() => onBlankClick?.(floorIndex)}
                   />
-                  <rect x={planLeft + 8} y={planTop + 8} width={planWidth - 16} height={planHeight - 16} rx="10" fill="none" stroke="rgba(255,255,255,0.08)" strokeDasharray="5 7" />
+                  <rect x={planLeft + 8} y={planTop + 8} width={planWidth - 16} height={planHeight - 16} rx={isVillaLike ? 0 : 4} fill="none" stroke={planTheme.innerStroke} strokeDasharray={isVillaLike ? "4 6" : "5 7"} />
 
-                  {spaces.map((space, spaceIndex) => {
-                    const column = spaceIndex % columns;
-                    const row = Math.floor(spaceIndex / columns);
-                    const tileX = planLeft + column * (tileWidth + gap);
-                    const tileY = planTop + row * (tileHeight + gap);
-                    const tone = getRoomTone(space);
-                    const label = space.length > 18 ? `${space.slice(0, 17)}…` : space;
-                    const fontSize = space.length > 18 ? 8 : 9;
-                    const isSelected = selectedRoom?.floorIndex === floorIndex && selectedRoom.roomIndex === spaceIndex;
-                    const relatedMarks = cadMarks.filter((mark) => mark.floorIndex === floorIndex && mark.roomIndex === spaceIndex);
+                  {placements.map((placement) => {
+                    const tone = getRoomTone(placement.space);
+                    const label = placement.space.length > 19 ? `${placement.space.slice(0, 18)}…` : placement.space;
+                    const fontSize = placement.width < 110 || placement.space.length > 20 ? 7.8 : 9;
+                    const isSelected = selectedRoom?.floorIndex === floorIndex && selectedRoom.roomIndex === placement.roomIndex;
+                    const relatedMarks = cadMarks.filter((mark) => mark.floorIndex === floorIndex && mark.roomIndex === placement.roomIndex);
+                    const category = placement.category;
 
                     return (
                       <g
-                        key={`${floor.level}-${space}-${spaceIndex}`}
+                        key={`${floor.level}-${placement.space}-${placement.roomIndex}`}
                         className={onRoomClick ? "cursor-pointer" : undefined}
                         onClick={(event) => {
                           event.stopPropagation();
-                          onRoomClick?.(floorIndex, spaceIndex);
+                          onRoomClick?.(floorIndex, placement.roomIndex);
                         }}
                       >
-                        <rect x={tileX} y={tileY} width={tileWidth} height={tileHeight} rx="8" fill={tone.fill} stroke={isSelected ? "rgba(196,181,253,0.95)" : "rgba(255,255,255,0.32)"} strokeWidth={isSelected ? 1.5 : 1.1} />
-                        <rect x={tileX + 2.5} y={tileY + 2.5} width={tileWidth - 5} height={tileHeight - 5} rx="6" fill="none" stroke={isSelected ? "rgba(232,121,249,0.9)" : tone.stroke} strokeWidth="1" />
+                        <rect x={placement.x} y={placement.y} width={placement.width} height={placement.height} rx={0} fill={tone.fill} stroke={isSelected ? (isVillaLike ? "rgba(124, 81, 41, 0.92)" : "rgba(196,181,253,0.95)") : tone.stroke} strokeWidth={isSelected ? 1.8 : 1.15} strokeLinejoin="miter" />
+                        <rect x={placement.x + 2.5} y={placement.y + 2.5} width={placement.width - 5} height={placement.height - 5} rx={0} fill="none" stroke={isSelected ? (isVillaLike ? "rgba(124, 81, 41, 0.72)" : "rgba(232,121,249,0.9)") : tone.stroke} strokeWidth="0.9" />
                         {isSelected && (
-                          <rect x={tileX - 1.5} y={tileY - 1.5} width={tileWidth + 3} height={tileHeight + 3} rx="10" fill="none" stroke="rgba(196,181,253,0.45)" strokeWidth="1.2" strokeDasharray="5 5" />
+                          <rect x={placement.x - 1.5} y={placement.y - 1.5} width={placement.width + 3} height={placement.height + 3} rx={0} fill="none" stroke={isVillaLike ? "rgba(130, 92, 51, 0.34)" : "rgba(196,181,253,0.45)"} strokeWidth="1.2" strokeDasharray="5 5" />
                         )}
-                        <line x1={tileX + tileWidth / 2 - 12} y1={tileY + tileHeight} x2={tileX + tileWidth / 2 + 12} y2={tileY + tileHeight} stroke="rgba(6,8,12,0.98)" strokeWidth="4" />
-                        <line x1={tileX + tileWidth / 2} y1={tileY + tileHeight} x2={tileX + tileWidth / 2} y2={tileY + tileHeight - 8} stroke={tone.stroke} strokeWidth="1.2" />
-                        <text x={tileX + tileWidth / 2} y={tileY + tileHeight / 2 - 1} textAnchor="middle" fill={tone.text} fontSize={fontSize} fontWeight="700" letterSpacing="0.02em">
+                        <line x1={placement.x + placement.width / 2 - 10} y1={placement.y + placement.height} x2={placement.x + placement.width / 2 + 10} y2={placement.y + placement.height} stroke={isVillaLike ? "rgba(82, 66, 52, 0.86)" : "rgba(6,8,12,0.98)"} strokeWidth="3" />
+                        <line x1={placement.x + placement.width / 2} y1={placement.y + placement.height} x2={placement.x + placement.width / 2} y2={placement.y + placement.height - 8} stroke={tone.stroke} strokeWidth="1.1" />
+                        <text x={placement.x + 8} y={placement.y + 16} textAnchor="start" fill={tone.text} fontSize={fontSize} fontWeight="700" letterSpacing="0.02em">
                           {label}
                         </text>
-                        <text x={tileX + tileWidth / 2} y={tileY + tileHeight / 2 + 12} textAnchor="middle" fill="rgba(226,232,240,0.65)" fontSize="8">
-                          floor plan room
+                        <text x={placement.x + 8} y={placement.y + placement.height - 8} textAnchor="start" fill={isVillaLike ? planTheme.subText : "rgba(226,232,240,0.65)"} fontSize="6.5" fontWeight="700" letterSpacing="0.08em">
+                          {category}
                         </text>
                         {relatedMarks.slice(0, 2).map((mark, markIndex) => (
                           <g key={mark.id}>
-                            <rect x={tileX + 6 + markIndex * 40} y={tileY + 6} width="34" height="12" rx="6" fill="rgba(6,8,12,0.74)" stroke="rgba(196,181,253,0.35)" />
-                            <text x={tileX + 23 + markIndex * 40} y={tileY + 15} textAnchor="middle" fill="#f5d0fe" fontSize="6.5" fontWeight="700">
+                            <rect x={placement.x + 6 + markIndex * 40} y={placement.y + 6} width="34" height="12" rx="6" fill={isVillaLike ? "rgba(255, 250, 242, 0.88)" : "rgba(6,8,12,0.74)"} stroke={isVillaLike ? "rgba(82, 66, 52, 0.24)" : "rgba(196,181,253,0.35)"} />
+                            <text x={placement.x + 23 + markIndex * 40} y={placement.y + 15} textAnchor="middle" fill={isVillaLike ? planTheme.footerText : "#f5d0fe"} fontSize="6.5" fontWeight="700">
                               {mark.tool.slice(0, 5)}
                             </text>
                           </g>
@@ -1757,19 +2115,27 @@ function HouseDwgViewport({
                     );
                   })}
 
-                  <rect x={planLeft + planWidth + 20} y={planTop} width="88" height={planHeight} rx="12" fill="rgba(168,85,247,0.08)" stroke="rgba(168,85,247,0.25)" />
-                  <text x={planLeft + planWidth + 64} y={planTop + 22} textAnchor="middle" fill="#f5d0fe" fontSize="10" fontWeight="800">
+                  <rect x={planLeft + planWidth + 20} y={planTop} width="88" height={planHeight} rx="12" fill={planTheme.coreFill} stroke={planTheme.coreStroke} />
+                  <text x={planLeft + planWidth + 64} y={planTop + 22} textAnchor="middle" fill={planTheme.coreText} fontSize="10" fontWeight="800">
                     CORE
                   </text>
-                  <text x={planLeft + planWidth + 64} y={planTop + 40} textAnchor="middle" fill="#e9d5ff" fontSize="8">
+                  <text x={planLeft + planWidth + 64} y={planTop + 40} textAnchor="middle" fill={planTheme.coreText} fontSize="8">
                     {coreLabel}
                   </text>
-                  <text x={planLeft + planWidth + 64} y={planTop + 58} textAnchor="middle" fill="#c4b5fd" fontSize="8">
+                  <text x={planLeft + planWidth + 64} y={planTop + 58} textAnchor="middle" fill={isVillaLike ? planTheme.subText : "#c4b5fd"} fontSize="8">
                     lift / stair
                   </text>
-                  <text x={planLeft + planWidth + 64} y={planTop + 80} textAnchor="middle" fill="#d8b4fe" fontSize="8">
+                  <text x={planLeft + planWidth + 64} y={planTop + 80} textAnchor="middle" fill={isVillaLike ? planTheme.subText : "#d8b4fe"} fontSize="8">
                     {hasLift ? "vertical core" : "stair only"}
                   </text>
+
+                  <g transform={`translate(${sheetWidth - 90}, ${contentTop + 18})`}>
+                    <line x1="18" y1="30" x2="18" y2="8" stroke={isVillaLike ? planTheme.footerText : "#f5d0fe"} strokeWidth="1.4" />
+                    <polygon points="18,2 11,12 25,12" fill={isVillaLike ? planTheme.footerText : "#f5d0fe"} />
+                    <text x="18" y="44" textAnchor="middle" fill={isVillaLike ? planTheme.subText : "#c4b5fd"} fontSize="9" fontWeight="800" letterSpacing="0.16em">
+                      N
+                    </text>
+                  </g>
 
                   {showMeasurementOverlay && (
                     <g>
@@ -1789,27 +2155,38 @@ function HouseDwgViewport({
                     </g>
                   )}
 
-                  <rect x="18" y={footerTop} width="724" height="24" rx="10" fill="rgba(6,8,12,0.84)" stroke="rgba(168,85,247,0.16)" />
-                  <text x="32" y={footerTop + 15} fill="#f5d0fe" fontSize="10" fontWeight="700" letterSpacing="0.08em">
-                    FREECAD-STYLE ORTHOGRAPHIC SHEET
+                  <rect x="18" y={footerTop} width="724" height="24" rx="10" fill={planTheme.footerFill} stroke={planTheme.footerStroke} />
+                  <text x="32" y={footerTop + 15} fill={planTheme.footerText} fontSize="10" fontWeight="700" letterSpacing="0.08em">
+                    ORTHOGRAPHIC FLOOR PLAN
                   </text>
-                  <text x="244" y={footerTop + 15} fill="#e9d5ff" fontSize="9" fontWeight="700" letterSpacing="0.06em">
+                  <text x="244" y={footerTop + 15} fill={planTheme.footerText} fontSize="9" fontWeight="700" letterSpacing="0.06em">
                     SCALE 1:100
                   </text>
-                  <text x="340" y={footerTop + 15} fill="#c4b5fd" fontSize="9" letterSpacing="0.04em">
+                  <text x="340" y={footerTop + 15} fill={planTheme.subText} fontSize="9" letterSpacing="0.04em">
                     {floor.spaces.length} ROOMS • {(floor.core?.length || 0) || 1} CORE ELEMENTS
                   </text>
-                  <text x="552" y={footerTop + 15} fill="#ddd6fe" fontSize="9" letterSpacing="0.04em">
+                  <text x="552" y={footerTop + 15} fill={planTheme.footerText} fontSize="9" letterSpacing="0.04em">
                     {footerSelectionLabel}
                   </text>
-                  <text x="32" y={footerTop + 28} fill="#94a3b8" fontSize="8">
-                    Preview only, not a native DWG file.
+                  <text x="32" y={footerTop + 28} fill={planTheme.subText} fontSize="8">
+                    CUT AT 4&apos;-0&quot; | NORTH UP | Preview only, not a native DWG file.
                   </text>
                   {floorIndex === 0 && (
-                    <text x="552" y={footerTop + 28} fill="#d8b4fe" fontSize="8" fontWeight="700">
+                    <text x="552" y={footerTop + 28} fill={isVillaLike ? planTheme.footerText : "#d8b4fe"} fontSize="8" fontWeight="700">
                       Road facing: {northFacing}
                     </text>
                   )}
+
+                  <g transform={`translate(${sheetWidth - 176}, ${footerTop + 8})`}>
+                    <rect x="0" y="4" width="18" height="4" fill={isVillaLike ? planTheme.footerText : "#c4b5fd"} opacity="0.88" />
+                    <rect x="18" y="4" width="18" height="4" fill={isVillaLike ? "rgba(82, 66, 52, 0.75)" : "rgba(196,181,253,0.55)"} />
+                    <rect x="36" y="4" width="18" height="4" fill={isVillaLike ? planTheme.footerText : "#c4b5fd"} opacity="0.88" />
+                    <rect x="54" y="4" width="18" height="4" fill={isVillaLike ? "rgba(82, 66, 52, 0.75)" : "rgba(196,181,253,0.55)"} />
+                    <text x="0" y="18" fill={planTheme.subText} fontSize="7" letterSpacing="0.1em">0</text>
+                    <text x="18" y="18" fill={planTheme.subText} fontSize="7" letterSpacing="0.1em">5</text>
+                    <text x="36" y="18" fill={planTheme.subText} fontSize="7" letterSpacing="0.1em">10</text>
+                    <text x="54" y="18" fill={planTheme.subText} fontSize="7" letterSpacing="0.1em">15 FT</text>
+                  </g>
                 </svg>
               </section>
             );
@@ -1849,7 +2226,8 @@ function PlannerResultPanel({
   const plotDepth = spec?.site?.plotDepthFt;
   const plotSpecified = typeof plotWidth === "number" && plotWidth > 0 && typeof plotDepth === "number" && plotDepth > 0;
   const professionalGuidance = buildProfessionalGuidance(spec, lawReview, lawReviewError);
-  const [activeView, setActiveView] = useState<"3d" | "dwg">(() => (embedded ? "dwg" : "3d"));
+  const [activeView, setActiveView] = useState<"3d" | "dwg" | "cad">(() => (embedded ? "dwg" : "3d"));
+  const [cadFloorIndex, setCadFloorIndex] = useState(0);
   const [activeTool, setActiveTool] = useState<CadTool>("select");
   const [activeFloorIndex, setActiveFloorIndex] = useState(0);
   const [editableFloors, setEditableFloors] = useState<FloorPlan[]>(() => cloneFloors(floors));
@@ -2191,7 +2569,7 @@ function PlannerResultPanel({
     cadStatus,
   ];
   const sourceLabel = spec?.source === "local" ? "Local DSL model" : "Backend DSL model";
-  const viewportTitle = activeView === "dwg" ? "DWG-style 2D plan" : "DSL-driven 3D model";
+  const viewportTitle = activeView === "dwg" ? "DWG-style 2D plan" : activeView === "cad" ? "Fusion CAD workspace" : "DSL-driven 3D model";
 
   return (
     <motion.section
@@ -2442,13 +2820,31 @@ function PlannerResultPanel({
               >
                 DWG
               </button>
+              <button
+                type="button"
+                onClick={() => setActiveView("cad")}
+                className={`rounded-full border px-3 py-1.5 text-[10px] uppercase tracking-[0.22em] transition ${activeView === "cad" ? "border-purple-300/40 bg-purple-400/20 text-purple-50" : "border-white/10 bg-white/5 text-gray-300 hover:bg-white/10"}`}
+              >
+                CAD
+              </button>
               <span className="rounded-full border border-purple-400/20 bg-purple-400/10 px-3 py-1.5 text-[10px] uppercase tracking-[0.22em] text-purple-100">
                 {activeFloorLabel}
               </span>
             </div>
           </div>
 
-          {activeView === "dwg" ? (
+          {activeView === "cad" ? (
+            <div className="min-h-[500px]">
+              <CadWorkspace
+                archetype={spec?.houseConcept?.archetype || "house"}
+                modifiers={spec?.houseConcept?.modifiers || []}
+                plotWidthFt={plotWidth}
+                plotDepthFt={plotDepth}
+                floorIndex={cadFloorIndex}
+                onFloorChange={setCadFloorIndex}
+              />
+            </div>
+          ) : activeView === "dwg" ? (
             <HouseDwgViewport
               spec={spec}
               floors={floors}
@@ -2462,7 +2858,7 @@ function PlannerResultPanel({
               showDimensions={activeTool === "measure" || activeTool === "dimension"}
             />
           ) : (
-            <HouseModelViewport dslSource={dslSource} embedded={embedded} />
+            <HouseModelViewport dslSource={dslSource} semanticIR={result.semanticIR} embedded={embedded} />
           )}
         </div>
 
@@ -2571,6 +2967,7 @@ export default function Home() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [started, setStarted] = useState(false);
+  const [isWizardOpen, setIsWizardOpen] = useState(false);
   const [chatHistory, setChatHistory] = useState<ChatHistoryItem[]>([]);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [generatorOpen, setGeneratorOpen] = useState(false);
@@ -2746,6 +3143,7 @@ export default function Home() {
   }, [generatorOpen, generatorPrompt, plannerResult]);
 
   const submitPrompt = async (prompt: string, intent: PromptIntent) => {
+    console.log("[ArchGPT v3.2] submitPrompt initiated", { intent });
     const trimmedPrompt = prompt.trim();
     if (!trimmedPrompt) return false;
 
@@ -2759,13 +3157,38 @@ export default function Home() {
     let localFallback: PlannerResult | null = null;
 
     try {
+      console.log("[ArchGPT] Building local fallback...");
       localFallback = buildLocalPlannerResult(trimmedPrompt, intent, previousSpec);
+      
+      console.log("[ArchGPT] Calling house-spec API...");
       const payload = await requestHousePlan(trimmedPrompt, intent, previousSpec);
+      
       const spec = payload.spec || ({} as HouseSpec);
       const lawReview = payload.lawReview || null;
       const lawReviewError = payload.lawReviewError || "";
       const dsl = payload.dsl || buildHouseDsl(spec, getStructureFloors(spec));
-      const nextResult: PlannerResult = { spec, lawReview, lawReviewError, dsl };
+
+      let semanticIR: ArchitecturalIR | undefined;
+      if (intent === "create") {
+        try {
+          console.log("[ArchGPT] Generating Semantic IR...");
+          const irResponse = await fetchWithTimeout("/api/generate-3d", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ prompt: trimmedPrompt }),
+            timeout: 25000,
+          });
+          if (irResponse.ok) {
+            semanticIR = await irResponse.json();
+            console.log("[ArchGPT] Semantic IR received.");
+          }
+        } catch (irError) {
+          console.warn("[ArchGPT] Semantic IR failed, falling back to DSL", irError);
+        }
+      }
+
+      const nextResult: PlannerResult = { spec, lawReview, lawReviewError, dsl, semanticIR };
+      console.log("[ArchGPT] Updating results.");
 
       setPlannerResult(nextResult);
       setMessages((current) => [
@@ -2778,6 +3201,7 @@ export default function Home() {
 
       return true;
     } catch (error) {
+      console.error("[ArchGPT] submitPrompt error:", error);
       const nextResult: PlannerResult = localFallback || buildEmergencyPlannerResult(trimmedPrompt, error);
 
       setPlannerResult(nextResult);
@@ -2791,6 +3215,7 @@ export default function Home() {
       return true;
     } finally {
       setIsSubmitting(false);
+      console.log("[ArchGPT] submitPrompt completed.");
     }
   };
 
@@ -2900,6 +3325,9 @@ export default function Home() {
 
   return (
     <>
+      <div className="fixed top-0 left-0 right-0 z-[9999] bg-red-600 text-white text-center py-1 text-xs font-bold uppercase tracking-widest">
+        ENGINE v3.2 ACTIVE - CACHE PURGE TEST
+      </div>
       <AnimatePresence mode="wait">
       {!started ? (
         // --- LANDING SCREEN ---
@@ -2929,6 +3357,15 @@ export default function Home() {
             transition={{ duration: 0.8, ease: "easeInOut" }}
             className="w-full max-w-2xl px-4"
           >
+            <div className="flex gap-4 mb-6 justify-center">
+              <button
+                onClick={() => setIsWizardOpen(true)}
+                className="flex items-center gap-2 px-6 py-3 bg-purple-600 hover:bg-purple-700 text-white rounded-full font-bold transition shadow-lg shadow-purple-500/20"
+              >
+                <Sparkles className="w-5 h-5" />
+                Start Guided Design
+              </button>
+            </div>
             <div className="relative">
               
               <textarea
@@ -3202,7 +3639,9 @@ export default function Home() {
                           onKeyDown={(event) => {
                             if (event.key === "Enter" && !event.shiftKey) {
                               event.preventDefault();
-                              handleGeneratorConfirm();
+                              if (!isSubmitting) {
+                                void handleGeneratorConfirm();
+                              }
                             }
                           }}
                           placeholder="Make me a G+3 street-facing modern house with parking for 2 cars"
@@ -3245,6 +3684,24 @@ export default function Home() {
         onClose={() => setProfessionalsDrawerOpen(false)}
         requestSummary={professionalsDrawerContext?.requestSummary || plannerResult?.spec?.request || generatorPrompt || input || "Nearby professional support"}
         guidanceNote={professionalsDrawerContext?.guidanceNote}
+      />
+
+      <DecisionTreeWizard 
+        isOpen={isWizardOpen} 
+        onClose={() => setIsWizardOpen(false)} 
+        onComplete={(aiSpec) => {
+          setIsWizardOpen(false);
+          if (aiSpec) {
+            setPlannerResult({
+              spec: aiSpec,
+              lawReview: null,
+              lawReviewError: "",
+              dsl: buildHouseDsl(aiSpec, aiSpec.floors || [])
+            });
+            setStarted(true);
+          }
+        }}
+        initialPrompt={input}
       />
     </>
   );

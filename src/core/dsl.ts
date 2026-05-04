@@ -13,13 +13,38 @@ export interface HouseProperties {
 }
 
 // Simple parser for the DSL
+/**
+ * Split a string by a delimiter while respecting brace/bracket nesting depth.
+ */
+function depthAwareSplit(input: string, delimiter = ','): string[] {
+    const parts: string[] = [];
+    let current = '';
+    let depth = 0;
+
+    for (let i = 0; i < input.length; i++) {
+        const char = input[i];
+        if (char === '{' || char === '[') depth++;
+        if (char === '}' || char === ']') depth = Math.max(0, depth - 1);
+
+        if (char === delimiter && depth === 0) {
+            if (current.trim()) parts.push(current.trim());
+            current = '';
+        } else {
+            current += char;
+        }
+    }
+
+    if (current.trim()) parts.push(current.trim());
+    return parts;
+}
+
 export function parseDSL(dslCode: string): HouseProperties {
     try {
         // Remove comments and whitespace
         dslCode = dslCode.replace(/\/\/.*$/gm, '').trim();
         
-        // Basic parsing of the house structure
-        const houseMatch = dslCode.match(/House\s*{([^}]*)}/s);
+        // Match the House block, allowing nested braces
+        const houseMatch = dslCode.match(/House\s*\{([\s\S]*?)\}/);
         if (!houseMatch) {
             throw new Error('No House definition found in DSL');
         }
@@ -30,17 +55,24 @@ export function parseDSL(dslCode: string): HouseProperties {
         let wallThickness: number | undefined;
         let material: HouseProperties['material'] | undefined;
 
-        const propertyLines = houseMatch[1].split(',').map(line => line.trim()).filter(Boolean);
+        const propertyLines = depthAwareSplit(houseMatch[1]);
         
         for (const line of propertyLines) {
-            const [key, value] = line.split(':').map(part => part.trim());
+            const colonIndex = line.indexOf(':');
+            if (colonIndex === -1) continue;
+            const key = line.slice(0, colonIndex).trim();
+            const value = line.slice(colonIndex + 1).trim();
+
             if (key && value) {
-                if (value.startsWith('{')) {
+                if (value.startsWith('{') && value.endsWith('}')) {
                     // Handle nested objects (like materials)
-                    const objStr = value.replace(/[{}]/g, '');
+                    const innerStr = value.slice(1, -1);
                     const materialObj: HouseProperties['material'] = {};
-                    objStr.split(',').map(pair => pair.trim()).filter(Boolean).forEach(pair => {
-                        const [k, v] = pair.split(':').map(p => p.trim());
+                    depthAwareSplit(innerStr).forEach(pair => {
+                        const pairColonIndex = pair.indexOf(':');
+                        if (pairColonIndex === -1) return;
+                        const k = pair.slice(0, pairColonIndex).trim();
+                        const v = pair.slice(pairColonIndex + 1).trim();
                         if (k && v) {
                             (materialObj as any)[k] = v.replace(/"/g, '');
                         }
@@ -130,93 +162,62 @@ export function parseCreateStatements(dslCode: string): ParsedElement[] {
     const elements: ParsedElement[] = [];
     
     try {
-        // First, split by lines and find all create blocks
-        const lines = dslCode.split('\n');
-        console.log(`Total lines: ${lines.length}`);
-        
-        let i = 0;
-        while (i < lines.length) {
-            const line = lines[i].trim();
+        const createRegex = /(?:^|\n)\s*create\s+([A-Za-z][\w-]*)\s*\{([\s\S]*?)\}/gi;
+        let match: RegExpExecArray | null;
+        while ((match = createRegex.exec(dslCode))) {
+            const type = match[1];
+            const block = match[2];
+            const props: any = {};
             
-            // Look for "create TYPE {"
-            if (line.startsWith('create ')) {
-                const typeMatch = line.match(/create\s+(\w+)\s*{?/);
-                if (typeMatch) {
-                    const type = typeMatch[1];
-                    console.log(`\n>> Found '${type}' at line ${i}`);
-                    
-                    const props: any = {};
-                    i++;
-                    
-                    // Read properties until we find the closing brace
-                    let depth = 1; // We already saw the opening brace
-                    while (i < lines.length && depth > 0) {
-                        const propLine = lines[i].trim();
-                        
-                        if (propLine.includes('{')) depth++;
-                        if (propLine.includes('}')) {
-                            depth--;
-                            if (depth === 0) {
-                                console.log(`   Closing brace found at line ${i}`);
-                                break;
-                            }
-                        }
-                        
-                        if (propLine && !propLine.startsWith('//') && !propLine.includes('{') && !propLine.includes('}')) {
-                            // Parse this property line
-                            // Format: key: value, or key: [a, b, c],
-                            
-                            if (propLine.includes(':')) {
-                                const [keyPart, valuePart] = propLine.split(':', 2);
-                                const key = keyPart.trim();
-                                const value = valuePart.trim().replace(/,\s*$/, ''); // Remove trailing comma
-                                
-                                if (key === 'position' && value.startsWith('[')) {
-                                    // Parse array position
-                                    const arrayMatch = value.match(/\[(.*)\]/);
-                                    if (arrayMatch) {
-                                        const coords = arrayMatch[1]
-                                            .split(',')
-                                            .map(c => parseFloat(c.trim()))
-                                            .filter(n => !isNaN(n));
-                                        if (coords.length === 3) {
-                                            props.position = [coords[0], coords[1], coords[2]];
-                                            console.log(`   -> position: [${coords[0]}, ${coords[1]}, ${coords[2]}]`);
-                                        }
-                                    }
-                                } else if (key === 'name') {
-                                    props.name = value.replace(/['"]/g, '');
-                                    console.log(`   -> name: "${props.name}"`);
-                                } else if (key === 'material') {
-                                    props.material = value.replace(/['"]/g, '');
-                                    console.log(`   -> material: "${props.material}"`);
-                                } else if (['width', 'height', 'depth', 'radius'].includes(key)) {
-                                    const numVal = parseFloat(value);
-                                    if (!isNaN(numVal)) {
-                                        props[key] = numVal;
-                                        console.log(`   -> ${key}: ${numVal}`);
-                                    }
-                                }
-                            }
-                        }
-                        
-                        i++;
-                    }
-                    
-                    // Check if we got required dimensions
-                    if (props.width !== undefined || props.height !== undefined || props.depth !== undefined) {
-                        elements.push({ type, properties: props });
-                        console.log(`   ✓ Added ${type}`);
-                    } else {
-                        console.log(`   ✗ Skipped ${type} - no dimensions`);
-                    }
-                    continue;
+            const parts: string[] = [];
+            let current = '';
+            let depth = 0;
+
+            for (let i = 0; i < block.length; i++) {
+                const char = block[i];
+                if (char === '{' || char === '[') depth++;
+                if (char === '}' || char === ']') depth = Math.max(0, depth - 1);
+
+                if ((char === ',' || char === '\n') && depth === 0) {
+                    if (current.trim()) parts.push(current.trim());
+                    current = '';
+                } else {
+                    current += char;
                 }
             }
+            if (current.trim()) parts.push(current.trim());
+
+            parts.forEach(line => {
+                const colonIndex = line.indexOf(':');
+                if (colonIndex === -1) return;
+                const key = line.slice(0, colonIndex).trim();
+                const value = line.slice(colonIndex + 1).trim();
+                
+                if (key === 'position' && value.startsWith('[')) {
+                    const coords = value.slice(1, -1).split(',').map(c => parseFloat(c.trim())).filter(n => !isNaN(n));
+                    if (coords.length === 3) props.position = [coords[0], coords[1], coords[2]];
+                } else if (key === 'name') {
+                    props[key] = value.replace(/['"]/g, '');
+                } else if (key === 'material') {
+                    if (value.startsWith('{')) {
+                        const matchWalls = value.match(/walls\s*:\s*['"]([^'"]+)['"]/);
+                        props.material = matchWalls ? matchWalls[1] : value;
+                    } else {
+                        props.material = value.replace(/['"]/g, '');
+                    }
+                } else if (['width', 'height', 'depth', 'radius'].includes(key)) {
+                    const numVal = parseFloat(value);
+                    if (!isNaN(numVal)) props[key] = numVal;
+                }
+            });
             
-            i++;
+            if (props.width !== undefined || props.height !== undefined || props.depth !== undefined) {
+                elements.push({ type, properties: props });
+                console.log(`   ✓ Added ${type}`);
+            } else {
+                console.log(`   ✗ Skipped ${type} - no dimensions`);
+            }
         }
-        
         console.log(`\n=== DSL PARSER END: Found ${elements.length} elements ===\n`);
     } catch (error) {
         console.error('Parser error:', error);

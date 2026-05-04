@@ -22,7 +22,7 @@ export class DSLParser {
         
         // Try shape/create syntax first
         const createMatch = /create\s+(\w+)\s*\{([^}]*)\}/i.exec(dslString);
-        const blockMatch = /^(\w+)\s*\{([^}]*)\}$/i.exec(dslString.trim());
+        const blockMatch = /(\w+)\s*\{([^}]*)\}/i.exec(dslString.trim());
         
         // Try transform commands
         const moveMatch = /move\s+(\w+)\s+to\s+([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)/i.exec(dslString);

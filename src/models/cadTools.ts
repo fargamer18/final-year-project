@@ -106,9 +106,10 @@ export class CADTools {
         
         this.saveHistory();
         const axisIndex = axis === 'x' ? 0 : axis === 'y' ? 1 : 2;
-        if (obj.transform.scale) {
-            obj.transform.scale[axisIndex] *= -1;
+        if (!obj.transform.scale) {
+            obj.transform.scale = [1, 1, 1];
         }
+        obj.transform.scale[axisIndex] *= -1;
         return obj;
     }
 
@@ -126,24 +127,30 @@ export class CADTools {
         const reference = objects[0];
         const refPos = reference.transform.position || [0, 0, 0];
         
+        const refWidth = Number(reference.properties?.width) || 0;
+        const refHeight = Number(reference.properties?.height) || 0;
+
         objects.slice(1).forEach(obj => {
             if (!obj.transform.position) obj.transform.position = [0, 0, 0];
+            const objWidth = Number(obj.properties?.width) || 0;
+            const objHeight = Number(obj.properties?.height) || 0;
             
             switch (direction) {
                 case 'left':
                     obj.transform.position[0] = refPos[0];
                     break;
                 case 'right':
-                    obj.transform.position[0] = refPos[0];
+                    obj.transform.position[0] = refPos[0] + refWidth - objWidth;
                     break;
                 case 'top':
                     obj.transform.position[1] = refPos[1];
                     break;
                 case 'bottom':
-                    obj.transform.position[1] = refPos[1];
+                    obj.transform.position[1] = refPos[1] + refHeight - objHeight;
                     break;
                 case 'center':
-                    obj.transform.position = [...refPos];
+                    obj.transform.position[0] = refPos[0] + (refWidth - objWidth) / 2;
+                    obj.transform.position[1] = refPos[1] + (refHeight - objHeight) / 2;
                     break;
             }
         });
